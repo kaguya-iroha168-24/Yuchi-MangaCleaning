@@ -1,0 +1,1 @@
+"""GUI-independent image processing."""

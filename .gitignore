@@ -1,0 +1,14 @@
+.cache/
+.venv/
+.venv-standalone/
+.venv-isolated/
+node_modules/
+dist/
+src-tauri/target/
+*.pyc
+__pycache__/
+.pytest_cache/
+.playwright-mcp/
+artifacts/
+outputs/
+*.tsbuildinfo

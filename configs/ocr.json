@@ -1,0 +1,9 @@
+{
+  "provider": "manga_ocr",
+  "python": "E:/BagassZx/Yuchi Labs/.venv-ocr/Scripts/python.exe",
+  "model_directory": "E:/BagassZx/Models/MangaOCR/manga-ocr-base",
+  "device": "cpu",
+  "timeout_seconds": 300,
+  "max_reserved_gib": 4.2,
+  "min_free_gib": 1.5
+}

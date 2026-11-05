@@ -1,0 +1,22 @@
+{
+  "default_provider": "shima_v1",
+  "checkpoint": "E:/BagassZx/Training/MangaClean/runs/yuchi_finetuned_v4_pilot20_phase06d_3b215c35_seed42/weights/best.pt",
+  "checkpoint_sha256": "63d58e3c5a68bca464f10142bde7fec322c396306cbcafde6306c66c8e851509",
+  "inference_python": "E:/BagassZx/Training/MangaClean/.venv/Scripts/python.exe",
+  "confidence": 0.25,
+  "iou": 0.7,
+  "image_size": 640,
+  "max_detections": 200,
+  "device": "auto",
+  "timeout_seconds": 180,
+  "shima_v1": {
+    "provider": "shima_v1",
+    "model_name": "Shima V1",
+    "checkpoint": "E:/BagassZx/Models/MangaLens/best.pt",
+    "checkpoint_sha256": "4028152940f7c910f40192f46ede3b3f6c7129e5c76849c324d3564f8ac50198",
+    "image_size": 1024,
+    "max_detections": 300,
+    "task": "segment",
+    "model_provenance": "Application name for MangaLens original weights; not a newly trained model."
+  }
+}

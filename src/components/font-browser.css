@@ -1,0 +1,9 @@
+.font-browser { display: grid; gap: 6px; min-width: 0; }
+.font-browser > button { width: 100%; text-align: left; }
+.font-browser-panel { min-width: 0; padding: 8px; border: 1px solid var(--studio-border); background: var(--studio-panel); }
+.font-browser-panel > input { width: 100%; box-sizing: border-box; }
+.font-browser-list { max-height: 240px; overflow-y: auto; margin-top: 6px; }
+.font-browser-item { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 1.2fr); align-items: center; gap: 8px; width: 100%; padding: 8px; text-align: left; }
+.font-browser-item[aria-pressed="true"] { outline: 1px solid var(--studio-accent); outline-offset: -1px; }
+.font-browser-item small { display: block; opacity: .7; font-size: 10px; }
+.font-browser-item img { width: 100%; max-height: 42px; object-fit: contain; object-position: left center; }

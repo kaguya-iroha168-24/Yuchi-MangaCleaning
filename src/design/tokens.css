@@ -1,0 +1,20 @@
+:root {
+  --studio-primary: #0D0D0F;
+  --studio-panel: #16161A;
+  --studio-elevated: #1E1E24;
+  --studio-border: #26262E;
+  --studio-accent: #6366F1;
+  --studio-cleaned: #06B6D4;
+  --studio-translated: #F59E0B;
+  --studio-ready: #10B981;
+  --studio-redraw: #EF4444;
+  --studio-canvas: #252B32; /* Explicit user override of the blueprint canvas surround. */
+  --studio-text: #E4E4EB;
+  --studio-muted: #A3A3B4;
+  --studio-header-height: 48px;
+  --studio-context-height: 40px;
+  --studio-rail-width: 48px;
+  --studio-navigator-width: 220px;
+  --studio-inspector-width: 360px;
+  --studio-status-height: 28px;
+}
