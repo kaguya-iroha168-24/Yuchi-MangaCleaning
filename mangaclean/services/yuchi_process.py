@@ -38,7 +38,7 @@ class InferenceSession:
         logs.mkdir(parents=True, exist_ok=True)
         self.log_path = logs/f'worker-{uuid4().hex}.log'
         self.log = self.log_path.open('w', encoding='utf-8')
-        self.process = subprocess.Popen([config['inference_python'], '-u', str(ROOT/'scripts/yuchi_inference.py'),
+        self.process = subprocess.Popen([config['inference_python'], '-B', '-u', str(ROOT/'scripts/yuchi_inference.py'),
             '--serve'], cwd=ROOT, env=process_environment(), stdin=subprocess.PIPE,
             stdout=self.log, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)

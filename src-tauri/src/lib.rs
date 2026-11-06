@@ -20,12 +20,16 @@ struct BackendState {
 }
 
 fn workspace() -> Result<PathBuf, String> {
+    #[cfg(debug_assertions)]
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or("Workspace path unavailable")?
         .to_path_buf();
+    #[cfg(not(debug_assertions))]
+    let root = std::env::current_exe().map_err(|error| error.to_string())?
+        .parent().ok_or("Application directory unavailable")?.join("runtime/app");
     if !root.join("backend/main.py").is_file() {
-        return Err("Python backend is missing from this development workspace.".into());
+        return Err("Application backend is missing. Keep the runtime folder beside MangaClean.exe.".into());
     }
     Ok(root)
 }
@@ -102,7 +106,10 @@ async fn bootstrap(window: tauri::WebviewWindow, state: State<'_, BackendState>)
         *guard = None;
     }
     let root = workspace()?;
+    #[cfg(debug_assertions)]
     let python = root.join(".venv-standalone/Scripts/python.exe");
+    #[cfg(not(debug_assertions))]
+    let python = root.parent().ok_or("Runtime directory unavailable")?.join("python/python.exe");
     if !python.is_file() {
         return Err("Python environment missing. Run setup first in the Tauri workspace.".into());
     }
@@ -122,6 +129,8 @@ async fn bootstrap(window: tauri::WebviewWindow, state: State<'_, BackendState>)
         .env("YUCHI_LABS_SETTINGS_DIR", cache.join("settings"))
         .env("TEMP", &temp)
         .env("TMP", &temp)
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)] {
@@ -132,6 +141,9 @@ async fn bootstrap(window: tauri::WebviewWindow, state: State<'_, BackendState>)
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
         if health(port, &token) {
+            // Safe measurement marker: no session token or request headers.
+            let _ = std::fs::write(cache.join("backend-ready.json"),
+                format!("{{\"backendPid\":{},\"phase\":\"authenticated_backend_healthy\"}}", child.id()));
             let session = Session { base_url: format!("http://127.0.0.1:{port}"), token };
             *guard = Some((child, session.clone()));
             return Ok(session);

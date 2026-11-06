@@ -12,17 +12,30 @@ $python = Join-Path $workspace '.venv-standalone\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python)) { throw 'Python environment missing. See README.md.' }
 if (-not (Test-Path -LiteralPath (Join-Path $workspace 'node_modules'))) { throw 'Frontend dependencies missing. See README.md.' }
 
-$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-$listener.Start()
+$portState = Join-Path $cache 'dev-port.json'
+$previousPort = 0
+if (Test-Path -LiteralPath $portState) {
+    try { $previousPort = [int]((Get-Content -LiteralPath $portState -Raw | ConvertFrom-Json).port) } catch { $previousPort = 0 }
+}
+if ($previousPort -lt 1024 -or $previousPort -gt 65535) { $previousPort = 0 }
+$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $previousPort)
+try { $listener.Start() } catch {
+    $listener.Stop()
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+}
 $port = $listener.LocalEndpoint.Port
 $listener.Stop()
+[System.IO.File]::WriteAllText($portState, (@{ port = $port } | ConvertTo-Json))
 
 $config = @{ build = @{
     devUrl = "http://127.0.0.1:$port"
     beforeDevCommand = "npm exec -- vite --host 127.0.0.1 --port $port --strictPort"
 } } | ConvertTo-Json -Depth 4
 $configPath = Join-Path $cache 'dev-config.json'
-[System.IO.File]::WriteAllText($configPath, $config)
+if (-not (Test-Path -LiteralPath $configPath) -or (Get-Content -LiteralPath $configPath -Raw) -ne $config) {
+    [System.IO.File]::WriteAllText($configPath, $config)
+}
 
 $env:CARGO_HOME = Join-Path $cache 'cargo'
 $env:RUSTUP_HOME = Join-Path $cache 'rustup'

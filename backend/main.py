@@ -29,12 +29,15 @@ from mangaclean.core.region_graph import RegionGraph, TextRegion
 from mangaclean.core.dialogue import Dialogue
 from mangaclean.core.ocr_result import update_source_region
 from mangaclean.core.text_cleaning import AUTO, TELEA, WHITE, restore_text, selection_mask
+from mangaclean.services.bubble_geometry import reframe_bubble
 from mangaclean.services.cleaning_pipeline import automatic_clean_safety, execute, prepare_bubble
 from mangaclean.services.detection import OPENCV, SHIMA, detect
 from mangaclean.services.detection_runtime import DetectionCancelled, detect_with_fallback
 from mangaclean.services.image_io import read_image, write_image
 from mangaclean.services.ocr import OCRCancelled, close_ocr, crop_region, ocr_config, recognize, source_text_digest
 from mangaclean.services.project_io import load_project, save_project
+from mangaclean.services.chapter import chapter_manifest
+from backend.chapter_routes import chapter_state, open_chapter, save_chapter
 from mangaclean.services.yuchi_process import close_detector, detection_config
 from mangaclean.services.typesetting import available_fonts, render_dialogue, composite, clear_render_cache, close_typesetter, TypesettingUnavailable
 from mangaclean.services.export_preflight import dialogue_export_issues, write_verified_image
@@ -105,6 +108,7 @@ class Store:
         self.preview: dict | None = None
         self.job: dict | None = None
         self.cancel = threading.Event()
+        self.cancel_requested_job: str | None = None
 
     def capture(self, keys=None) -> None:
         self.undo.append(self.frame(keys))
@@ -152,21 +156,22 @@ def public_state() -> dict:
         "height": int(doc.source.shape[0]), "revision": doc.revision, "dirty": doc.dirty, "savedPath": doc.saved_path,
         "bubbles": [{"id": b.id, "rect": list(b.rect), "confidence": b.confidence,
                      "source": {SHIMA: "Shima V1", "yuchi_v4": "Yuchi Fine-Tuned v4", OPENCV: "OpenCV"}.get(b.provenance.get("provider"), "Loaded project / detector unknown"),
-                     "review": b.review_decision, "kind": b.candidate_kind, "cleaning": b.cleaning_status,
+                     "review": b.review_decision, "excluded": bool(b.provenance.get("excluded")), "kind": b.candidate_kind, "cleaning": b.cleaning_status,
                      "message": b.cleaning_message, "predictionRect": b.provenance.get('native_prediction_rect'),
                      "containerPixels": int(np.count_nonzero(b.segmentation)) if b.segmentation is not None else 0,
                      "textRegions": [list(r) for r in b.text_regions]} for b in doc.bubbles],
         "textRegions": [{"id": r.id, "rect": list(r.rect), "text": r.source_text,
+                         "sourceEdited": bool(r.source_text or r.provenance.get('source_manually_corrected')),
                          "bubbleId": r.bubble_id, "kind": r.kind, "direction": r.direction,
                          "ocr": deepcopy(r.provenance.get("ocr"))} for r in doc.region_graph.text_regions],
         "pageId": doc.region_graph.page_id, "dialogues": [asdict(text) for text in doc.dialogues],
         "readingOrder": list(doc.region_graph.reading_order), "detectionRuns": doc.detection_runs[-3:],
         "canUndo": bool(store.undo), "canRedo": bool(store.redo),
-    }, "job": store.job}
+    }, "job": store.job, "chapter": chapter_state(store)}
 
 
-def check_idle() -> None:
-    if store.job and store.job["status"] in ("queued", "running"):
+def check_idle(editing=False) -> None:
+    if store.job and store.job["status"] in ("queued", "running") and not (editing and store.job.get("editingAllowed")):
         raise HTTPException(409, "Tunggu pekerjaan aktif selesai.")
 
 
@@ -220,11 +225,14 @@ async def open_file(request: Request, file: UploadFile):
     require_auth(request.headers.get("authorization"))
     with store.lock:
         check_idle()
-        if store.document and store.document.dirty and request.query_params.get("discard") != "true":
+        if store.document and (store.document.dirty or (chapter_state(store) or {}).get("dirty")) and request.query_params.get("discard") != "true":
             raise HTTPException(409, "Perubahan belum disimpan. Konfirmasi sebelum membuka berkas lain.")
     suffix = Path(file.filename or "").suffix.lower()
     path = await bounded_upload(file, 300_000_000 if suffix == ".mangaclean" else 100_000_000)
     try:
+        if suffix == ".mangaclean" and chapter_manifest(path):
+            with store.lock:
+                check_idle();open_chapter(__import__("types").SimpleNamespace(**globals()),path);return public_state()
         if suffix == ".mangaclean":
             data = load_project(path)
             source = data["source"]
@@ -240,6 +248,7 @@ async def open_file(request: Request, file: UploadFile):
                            mask=np.zeros(source.shape[:2], np.uint8), region_graph=RegionGraph.for_legacy(source, name))
         with store.lock:
             store.document = doc
+            store.chapter = None
             store.undo.clear(); store.redo.clear(); store.preview = None
             clear_render_cache()
             return public_state()
@@ -347,6 +356,10 @@ def start_detect(payload: DetectRequest, request: Request):
 @app.post("/v1/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, request: Request):
     require_auth(request.headers.get("authorization"))
+    if not store.job or store.job['id'] != job_id: raise HTTPException(404, "Pekerjaan tidak ditemukan.")
+    # A job-specific marker can be observed during a locked pixel operation;
+    # an old cancellation cannot signal a newer job's shared event.
+    store.cancel_requested_job = job_id
     with store.lock:
         if not store.job or store.job["id"] != job_id: raise HTTPException(404, "Pekerjaan tidak ditemukan.")
         store.job["cancelRequested"] = True
@@ -398,6 +411,30 @@ def review(identifier: str, payload: ReviewRequest, request: Request):
         return public_state()
 
 
+class BubbleGeometryRequest(BaseModel):
+    rect: tuple[StrictInt, StrictInt, StrictInt, StrictInt]
+
+
+@app.post('/v1/bubbles/{identifier}/geometry')
+def edit_bubble_geometry(identifier: str, payload: BubbleGeometryRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True); doc=store.require(); bubble=bubble_by_id(identifier)
+        try:
+            replacement=reframe_bubble(bubble,payload.rect,doc.source.shape)
+            graph=deepcopy(doc.region_graph)
+            for region in graph.text_regions:
+                if region.bubble_id==identifier:
+                    update_source_region(graph,region.id,'rect',payload.rect)
+            bubbles=[replacement if b.id==identifier else b for b in doc.bubbles]
+            graph.validate(doc.source.shape,bubbles)
+        except ValueError as error:raise HTTPException(422,str(error)) from error
+        store.capture(('bubbles','region_graph'))
+        doc.bubbles=bubbles;doc.region_graph=graph
+        doc.revision+=1;doc.dirty=True;store.preview=None
+        return public_state()
+
+
 class ManualRequest(BaseModel):
     rect: tuple[int, int, int, int]
 
@@ -425,11 +462,9 @@ def edit_preview(payload: MaskEditRequest, request: Request):
     require_auth(request.headers.get('authorization'))
     if payload.mode not in {'add', 'erase'}: raise HTTPException(422, 'Mode brush tidak valid.')
     with store.lock:
-        check_idle(); doc = store.require(); preview = store.preview
+        check_idle(editing=True); doc = store.require(); preview = store.preview
         if preview is None or payload.previewId != preview['id'] or preview['revision'] != doc.revision:
             raise HTTPException(409, 'Preview mask sudah tidak berlaku.')
-        if any(bubble_by_id(identifier).review_decision != 'Accepted' for identifier in preview['bubbleIds']):
-            raise HTTPException(409, 'Kandidat belum diterima.')
         height, width = doc.source.shape[:2]
         if any(not (0 <= x < width and 0 <= y < height) for x, y in payload.points):
             raise HTTPException(422, 'Brush berada di luar koordinat native.')
@@ -464,8 +499,7 @@ def edit_preview(payload: MaskEditRequest, request: Request):
 def preview_bubble(identifier: str, request: Request):
     require_auth(request.headers.get("authorization"))
     with store.lock:
-        check_idle(); doc = store.require(); bubble = bubble_by_id(identifier)
-        if bubble.review_decision != "Accepted": raise HTTPException(409, "Terima kandidat sebelum menyiapkan mask.")
+        check_idle(editing=True); doc = store.require(); bubble = bubble_by_id(identifier)
         try:
             proposal = prepare_bubble(doc.working, bubble, doc.mask, doc.manual_mask)
             safety = automatic_clean_safety(doc.working, proposal, doc.manual_mask)
@@ -481,11 +515,9 @@ class BatchPreviewRequest(BaseModel):
 def preview_batch(payload: BatchPreviewRequest, request: Request):
     require_auth(request.headers.get('authorization'))
     with store.lock:
-        check_idle(); doc = store.require()
+        check_idle(editing=True); doc = store.require()
         if len(set(payload.ids)) != len(payload.ids): raise HTTPException(422, 'ID kandidat duplikat.')
         bubbles = [bubble_by_id(identifier) for identifier in payload.ids]
-        if any(b.review_decision != 'Accepted' for b in bubbles):
-            raise HTTPException(409, 'Semua kandidat terpilih harus diterima sebelum preview batch.')
         try: proposals = [prepare_bubble(doc.working, b, doc.mask, doc.manual_mask) for b in bubbles]
         except ValueError as error: raise HTTPException(422, str(error)) from error
         if any(not np.any(p.mask) for p in proposals): raise HTTPException(422, 'Salah satu kandidat tidak memiliki text-mask; periksa satu per satu.')
@@ -503,7 +535,7 @@ def preview_batch(payload: BatchPreviewRequest, request: Request):
 def preview_manual(payload: ManualRequest, request: Request):
     require_auth(request.headers.get("authorization"))
     with store.lock:
-        check_idle(); doc = store.require()
+        check_idle(editing=True); doc = store.require()
         try:
             selection = selection_mask(doc.working, payload.rect)
         except ValueError as error: raise HTTPException(422, str(error)) from error
@@ -521,48 +553,54 @@ class CleanRequest(BaseModel):
     radius: float = Field(default=3, ge=1, le=12)
 
 
+def apply_clean(payload: CleanRequest, check_cancel=None):
+    """Commit a validated mask under store.lock; shared by explicit and queued cleaning."""
+    if payload.method not in {AUTO, TELEA, WHITE}: raise HTTPException(400, "Metode cleaning tidak valid.")
+    doc = store.require(); preview = store.preview
+    if preview is None or preview["id"] != payload.previewId or preview["revision"] != doc.revision:
+        raise HTTPException(409, "Pratinjau sudah tidak berlaku. Siapkan ulang mask.")
+    bubbles = [bubble_by_id(identifier) for identifier in preview['bubbleIds']]
+    mask = preview["mask"].copy(); before = doc.working.copy()
+    try:
+        result, checks = execute(before, mask, payload.method, payload.radius,
+                                 preview['safe'] if bubbles else None,
+                                 preview['proposals'], restore_text)
+    except ValueError as error: raise HTTPException(422, str(error)) from error
+    if result.changed_pixels == 0: raise HTTPException(422, "Tidak ada piksel berubah.")
+    if check_cancel is not None: check_cancel()
+    store.capture()
+    doc.working = result.image
+    doc.mask[mask > 0] = 0
+    for bubble in bubbles:
+        x, y, w, h = bubble.rect
+        bubble.last_applied_mask = mask[y:y+h, x:x+w].copy()
+        bubble.last_before = before[y:y+h, x:x+w].copy()
+        check = checks.get(bubble.id, {"status": "Needs Result Review", "warnings": ["Periksa hasil secara visual."]})
+        bubble.cleaning_status = check["status"]
+        bubble.cleaning_message = " ".join(check.get("warnings", []))
+        bubble.provenance = dict(bubble.provenance, result_assessment=check, mask_approved=False,
+                                 last_mask_edit=dict(preview['analysis']) if preview['analysis'].get('manually_edited') else None)
+    if not bubbles:
+        if doc.manual_mask is None: doc.manual_mask = np.zeros_like(mask)
+    doc.revision += 1; doc.dirty = True; store.preview = None
+    return {"state": public_state(), "result": {"method": result.method, "maskedPixels": result.masked_pixels,
+            "changedPixels": result.changed_pixels, "outsideChangedPixels": result.outside_changed_pixels,
+            "checks": checks}}
+
+
 @app.post("/v1/clean/confirm")
 def clean(payload: CleanRequest, request: Request):
     require_auth(request.headers.get("authorization"))
-    if payload.method not in {AUTO, TELEA, WHITE}: raise HTTPException(400, "Metode cleaning tidak valid.")
     with store.lock:
-        check_idle(); doc = store.require(); preview = store.preview
-        if preview is None or preview["id"] != payload.previewId or preview["revision"] != doc.revision:
-            raise HTTPException(409, "Pratinjau sudah tidak berlaku. Siapkan ulang mask.")
-        bubbles = [bubble_by_id(identifier) for identifier in preview['bubbleIds']]
-        if any(b.review_decision != 'Accepted' for b in bubbles): raise HTTPException(409, 'Kandidat belum diterima.')
-        mask = preview["mask"].copy(); before = doc.working.copy()
-        try:
-            result, checks = execute(before, mask, payload.method, payload.radius,
-                                     preview['safe'] if bubbles else None,
-                                     preview['proposals'], restore_text)
-        except ValueError as error: raise HTTPException(422, str(error)) from error
-        if result.changed_pixels == 0: raise HTTPException(422, "Tidak ada piksel berubah.")
-        store.capture()
-        doc.working = result.image
-        doc.mask[mask > 0] = 0
-        for bubble in bubbles:
-            x, y, w, h = bubble.rect
-            bubble.last_applied_mask = mask[y:y+h, x:x+w].copy()
-            bubble.last_before = before[y:y+h, x:x+w].copy()
-            check = checks.get(bubble.id, {"status": "Needs Result Review", "warnings": ["Periksa hasil secara visual."]})
-            bubble.cleaning_status = check["status"]
-            bubble.cleaning_message = " ".join(check.get("warnings", []))
-            bubble.provenance = dict(bubble.provenance, result_assessment=check, mask_approved=False,
-                                     last_mask_edit=dict(preview['analysis']) if preview['analysis'].get('manually_edited') else None)
-        if not bubbles:
-            if doc.manual_mask is None: doc.manual_mask = np.zeros_like(mask)
-        doc.revision += 1; doc.dirty = True; store.preview = None
-        return {"state": public_state(), "result": {"method": result.method, "maskedPixels": result.masked_pixels,
-                "changedPixels": result.changed_pixels, "outsideChangedPixels": result.outside_changed_pixels,
-                "checks": checks}}
+        check_idle(editing=True)
+        return apply_clean(payload)
 
 
 @app.post("/v1/undo")
 def undo(request: Request):
     require_auth(request.headers.get("authorization"))
     with store.lock:
-        check_idle(); doc = store.require()
+        check_idle(editing=True); doc = store.require()
         if not store.undo: raise HTTPException(409, "Tidak ada perubahan untuk di-undo.")
         frame = store.undo.pop()
         store.redo.append(store.frame(frame.keys()))
@@ -574,7 +612,7 @@ def undo(request: Request):
 def redo(request: Request):
     require_auth(request.headers.get("authorization"))
     with store.lock:
-        check_idle(); doc = store.require()
+        check_idle(editing=True); doc = store.require()
         if not store.redo: raise HTTPException(409, "Tidak ada perubahan untuk di-redo.")
         frame = store.redo.pop()
         store.undo.append(store.frame(frame.keys()))
@@ -625,7 +663,7 @@ def typography_preview(payload: dict, request: Request):
 def add_dialogue(payload: dict, request: Request):
     require_auth(request.headers.get('authorization'))
     with store.lock:
-        check_idle(); doc = store.require()
+        check_idle(editing=True); doc = store.require()
         if len(doc.dialogues) >= 200: raise HTTPException(422, 'At most 200 editable text layers are supported.')
         try: text = validated_dialogue(payload, doc)
         except (ValueError, TypeError) as error: raise HTTPException(422, str(error)) from error
@@ -639,7 +677,7 @@ def add_dialogue(payload: dict, request: Request):
 def delete_dialogue(identifier: str, request: Request):
     require_auth(request.headers.get('authorization'))
     with store.lock:
-        check_idle(); doc = store.require()
+        check_idle(editing=True); doc = store.require()
         if not any(text.id == identifier for text in doc.dialogues): raise HTTPException(404, 'Dialogue not found.')
         store.capture(('dialogues', 'active_text_id'))
         doc.dialogues = [text for text in doc.dialogues if text.id != identifier]
@@ -652,7 +690,7 @@ def delete_dialogue(identifier: str, request: Request):
 def edit_dialogue(identifier: str, payload: dict, request: Request):
     require_auth(request.headers.get('authorization'))
     with store.lock:
-        check_idle(); doc = store.require()
+        check_idle(editing=True); doc = store.require()
         original = next((text for text in doc.dialogues if text.id == identifier), None)
         if original is None: raise HTTPException(404, 'Dialogue not found.')
         if not payload: raise HTTPException(422, 'Choose typography properties to edit.')
@@ -675,7 +713,7 @@ class TextRequest(BaseModel):
 def add_text(payload: TextRequest, request: Request):
     require_auth(request.headers.get("authorization"))
     with store.lock:
-        check_idle(); doc = store.require()
+        check_idle(editing=True); doc = store.require()
         try:
             graph = deepcopy(doc.region_graph)
             region = TextRegion(rect=payload.rect, source_text=payload.text, bubble_id=payload.bubbleId)
@@ -699,13 +737,15 @@ class TextCorrection(BaseModel):
 def correct_text(identifier: str, payload: TextCorrection, request: Request):
     require_auth(request.headers.get('authorization'))
     with store.lock:
-        check_idle(); doc = store.require()
+        check_idle(editing=True); doc = store.require()
         if doc.region_graph.region(identifier) is None: raise HTTPException(404, 'TextRegion tidak ditemukan.')
         if payload.text is None and payload.rect is None and payload.direction is None:
             raise HTTPException(422, 'Pilih transkripsi, batas crop, atau arah baca untuk diedit.')
         graph = deepcopy(doc.region_graph)
         try:
-            if payload.text is not None: update_source_region(graph, identifier, 'source_text', payload.text)
+            if payload.text is not None:
+                update_source_region(graph, identifier, 'source_text', payload.text)
+                graph.region(identifier).provenance['source_manually_corrected']=True
             if payload.rect is not None: update_source_region(graph, identifier, 'rect', payload.rect)
             if payload.direction is not None: update_source_region(graph, identifier, 'direction', payload.direction)
             graph.validate(doc.source.shape, doc.bubbles)
@@ -723,7 +763,7 @@ class ReadingOrderRequest(BaseModel):
 def reorder_text(payload: ReadingOrderRequest, request: Request):
     require_auth(request.headers.get('authorization'))
     with store.lock:
-        check_idle(); doc = store.require(); graph = deepcopy(doc.region_graph)
+        check_idle(editing=True); doc = store.require(); graph = deepcopy(doc.region_graph)
         graph.reading_order = list(payload.ids)
         try: graph.validate(doc.source.shape, doc.bubbles)
         except ValueError as error: raise HTTPException(422, str(error)) from error
@@ -882,6 +922,8 @@ def persist(kind: str, request: Request):
         raise HTTPException(404, "Format penyimpanan tidak didukung.")
     with store.lock:
         check_idle(); doc = store.require()
+        if kind == 'project' and getattr(store,'chapter',None) and len(store.chapter.pages)>1:
+            return save_chapter(__import__("types").SimpleNamespace(**globals()))
         if kind != 'project': require_export_ready(doc)
         folder = ROOT / "outputs" / ("projects" if kind == "project" else "exports")
         folder.mkdir(parents=True, exist_ok=True)
@@ -960,6 +1002,11 @@ def main() -> None:
         close_typesetter()
         close_detector()
 
+
+from backend.chapter_routes import register as register_chapter_routes
+register_chapter_routes(globals())
+from backend.workflow import register as register_workflow
+register_workflow(globals())
 
 if __name__ == "__main__":
     main()

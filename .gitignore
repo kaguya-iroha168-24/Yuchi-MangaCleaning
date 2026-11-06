@@ -12,3 +12,5 @@ __pycache__/
 artifacts/
 outputs/
 *.tsbuildinfo
+releases/
+MangaClean.lnk

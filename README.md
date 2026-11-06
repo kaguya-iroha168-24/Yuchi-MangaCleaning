@@ -88,3 +88,22 @@ application's project file. See the diagnostic report for current results and ga
 ## Real manga validation checkpoint
 
 TextRegion now supports native crop and reading-direction edits, with a selected-region overlay. Crop changes mark previous OCR Stale while retaining raw provenance; direction metadata does not rotate source pixels. Six real Japanese manga workflows and eight real-crop OCR requests were evaluated. Patterned text and rotated OCR remain partial; exact native1366/1920 and cold-start acceptance are incomplete. See `E:\BagassZx\Yuchi-Diagnostics\mangaclean-tauri-migration\realworld-20261028\REPORT.md`. Packaging is gated; `scripts/release_preflight.py` inventories blockers without building/installing. New regression only: `.venv-standalone\Scripts\python.exe -B tests/test_text_region_editing.py`. Retained parity tests were not repeated.
+# Windows Local Release
+
+Double-click **MangaClean.lnk** in this workspace, or `MangaClean.exe` inside
+the folder named in `.cache/latest-release.json`. Keep its `runtime` folder
+beside the executable. Launching this release does not run Vite, Cargo or a
+terminal. `Start-Yuchi-Dev.cmd` remains the explicit development entry point;
+the older `Start-Yuchi-Tauri.cmd` also still launches development mode.
+
+This is a **local-machine release**, not yet a standalone distribution for
+another PC. Its CPU API Python is included; detector/OCR worker interpreters,
+model weights and Windows fonts remain the read-only existing prerequisites
+listed in `RELEASE_MANIFEST.json`. Do not move or modify those shared resources.
+
+Build/stage only when updating the application:
+`powershell -File scripts/build_release.ps1`.
+To stage an already-built executable without compiling again, use `-SkipBuild`.
+Interrupted staging can resume with `-SkipBuild -ResumeDirectory <release-folder>`;
+files are reused only after SHA-256 verification. No installer is run by these scripts.
+

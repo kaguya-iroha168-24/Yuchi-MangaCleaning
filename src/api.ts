@@ -1,17 +1,19 @@
 import { invoke } from '@tauri-apps/api/core';
 
-export type Bubble = { id: string; rect: number[]; predictionRect: number[] | null; containerPixels: number; confidence: number | null; source: string; review: string; kind: string; cleaning: string; message: string; textRegions: number[][] };
+export type Bubble = { id: string; rect: number[]; excluded?: boolean; predictionRect: number[] | null; containerPixels: number; confidence: number | null; source: string; review: string; kind: string; cleaning: string; message: string; textRegions: number[][] };
 export type OCRProposal = { status: string; raw_text: string; edited_text: string; confidence: number | null; provider: string; model_id: string; device: string; warnings?: string[] };
-export type TextRegion = { id: string; rect: number[]; text: string; bubbleId: string | null; kind: string; direction: 'unspecified' | 'ltr' | 'rtl' | 'vertical'; ocr: OCRProposal | null };
+export type TextRegion = { id: string; rect: number[]; text: string; bubbleId: string | null; sourceEdited?: boolean; kind: string; direction: 'unspecified' | 'ltr' | 'rtl' | 'vertical'; ocr: OCRProposal | null };
 export type Dialogue = { id: string; text: string; bubble_id: string | null; source_region_id: string | null; x: number; y: number; width: number; height: number; family: string; size: number; weight: number; minimum_size: number; color: string; alignment: 'left' | 'center' | 'right'; visible: boolean; auto_fit: boolean; padding: number };
 export type TypographyRender = { png: string; width: number; height: number; effectiveSize: number; resolvedFamily: string; resolvedWeight: number; overflow: boolean; warnings: string[]; contentRect: number[]; durationMs: number; cacheHit: boolean };
 export type DocumentState = { sourceName: string; projectName: string | null; pageId: string; width: number; height: number; revision: number; dirty: boolean; canUndo: boolean; canRedo: boolean; savedPath: string | null; bubbles: Bubble[]; textRegions: TextRegion[]; dialogues: Dialogue[]; readingOrder: string[]; detectionRuns: Record<string, unknown>[] };
 export type SaveReceipt = { path: string; sha256: string; bytes: number; revision: number; verified: boolean; state: State };
 export type ExportIssue = { dialogueId: string; dialogueLabel: string; bubbleId: string | null; candidateNumber: number | null; reason: string; code: string; requestedFamily: string; requestedWeight: number; requestedSize: number; resolvedFamily: string | null; resolvedWeight: number | null; resolvedSize: number | null };
 export type ExportPreflight = { code: 'typesetting_preflight'; message: string; pageName: string; pageId: string; pageNumber: number; revision: number; issues: ExportIssue[] };
-export type Job = { id: string; type: string; status: string; progress: number; cancelRequested: boolean; message?: string; error?: string; result?: Record<string, unknown> };
-export type State = { schema: number; document: DocumentState | null; job: Job | null; imagesChanged?: boolean };
+export type Job = { id: string; type: string; status: string; progress: number; cancelRequested: boolean; stage?: string; editingAllowed?: boolean; currentPageId?: string; message?: string; error?: string; result?: Record<string, unknown> };
+export type State = { schema: number; document: DocumentState | null; job: Job | null; chapter?: ChapterState | null; imagesChanged?: boolean };
 export type Preview = { id: string; revision: number; maskPixels: number; analysis: Record<string, unknown>; bubbleId: string | null };
+export type ChapterPage = { id: string; name: string; width: number; height: number; dirty: boolean; saved?: boolean; bubbles: number; thumbnail: string };
+export type ChapterState = { id: string; activePageId: string; dirty: boolean; savedPath: string | null; pages: ChapterPage[] };
 type Session = { baseUrl: string; token: string };
 export type FontEntry = { family: string; weights: number[]; status?: 'Available' | 'Missing' | 'Fallback'; sample?: string; preview?: string | null; warning?: string; license?: string };
 type FontCatalog = { fonts: FontEntry[] };
@@ -122,6 +124,11 @@ export class Api {
   async upload(file: File, discard = false): Promise<State> {
     const form = new FormData(); form.append('file', file);
     return this.request<State>(`/v1/open${discard ? '?discard=true' : ''}`, 'POST', form);
+  }
+
+  async uploadPages(files: File[], append = false, discard = false): Promise<State> {
+    const form = new FormData(); files.forEach(file => form.append('files', file));
+    return this.request<State>(`/v1/pages/import?append=${append}&discard=${discard}`, 'POST', form);
   }
 
   async image(kind: string): Promise<string> {

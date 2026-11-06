@@ -13,6 +13,21 @@ const text = { id: 'text1', text: 'Initial', bubble_id: null, source_region_id: 
 const page = (item = text, pageId = 'page1') => ({ pageId, dialogues: [item] });
 const layer = name => ({ png: name, warnings: [], width: 120, height: 150 });
 
+test('linked bubble ROI invalidates only its fitted raster', async () => {
+  let calls = 0;
+  const session = new TypographySession();
+  const api = { post: async () => { calls++; return layer('fit'); } };
+  const linked = { ...text, bubble_id: 'bubble1' };
+  const doc = rect => ({ ...page(linked), bubbles: [{ id:'bubble1', rect, containerPixels:100 }] });
+  const callbacks = { state() {}, dirty() {}, error() {} };
+  session.configure(api, doc([0,0,100,100]), callbacks); await delay(20);
+  assert.equal(calls, 1);
+  session.configure(api, doc([0,0,100,100]), callbacks); await delay(20);
+  assert.equal(calls, 1);
+  session.configure(api, doc([0,0,120,100]), callbacks); await delay(20);
+  assert.equal(calls, 2); session.dispose();
+});
+
 test('typing stays transient, coalesces preview and persists once before Save', async () => {
   const calls = [], states = [], dirty = [];
   const api = { post: async (path, values) => { calls.push(path); return path.includes('preview') ? layer(values.dialogue.text) : { document: page({ id: text.id, ...values }) }; } };

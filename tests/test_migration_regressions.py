@@ -64,11 +64,11 @@ class MigrationRegression(unittest.TestCase):
         self.post('/v1/redo');self.assertEqual(self.state()['bubbles'],expected)
         self.assertEqual(len(self.state()['detectionRuns']),1)
 
-    def test_review_preview_brush_clip_clean_undo_redo(self):
+    def test_direct_preview_brush_clip_clean_undo_redo(self):
         identifier=self.scan()
-        self.assertEqual(self.post(f'/v1/bubbles/{identifier}/preview').status_code,409)
+        self.assertEqual(self.post(f'/v1/bubbles/{identifier}/preview').status_code,200)
         self.post(f'/v1/bubbles/{identifier}/review',{'decision':'Rejected'})
-        self.assertEqual(self.post(f'/v1/bubbles/{identifier}/preview').status_code,409)
+        self.assertEqual(self.post(f'/v1/bubbles/{identifier}/preview').status_code,200)
         self.post(f'/v1/bubbles/{identifier}/review',{'decision':'Accepted'})
         preview=self.post(f'/v1/bubbles/{identifier}/preview').json()
         original_mask=self.pixels('preview');before=self.pixels('working')
@@ -100,11 +100,9 @@ class MigrationRegression(unittest.TestCase):
         self.assertEqual(self.post('/v1/clean/confirm',{'previewId':preview['id']}).status_code,409)
         np.testing.assert_array_equal(self.pixels('working'),self.image)
 
-    def test_multi_selected_clean_is_atomic_and_requires_all_reviews(self):
+    def test_multi_selected_clean_is_atomic_without_required_reviews(self):
         self.scan();ids=[b['id'] for b in self.state()['bubbles'][:2]]
-        self.post(f'/v1/bubbles/{ids[0]}/review',{'decision':'Accepted'})
-        self.assertEqual(self.post('/v1/bubbles/preview',{'ids':ids}).status_code,409)
-        self.post(f'/v1/bubbles/{ids[1]}/review',{'decision':'Accepted'})
+        self.assertTrue(all(b['review']=='Needs Review' for b in self.state()['bubbles'][:2]))
         preview=self.post('/v1/bubbles/preview',{'ids':ids})
         self.assertEqual(preview.status_code,200,preview.text)
         mask=self.pixels('preview');before=self.pixels('working')

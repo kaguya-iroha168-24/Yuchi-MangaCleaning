@@ -47,24 +47,24 @@ test('empty project keeps manual and mask tools disabled', () => {
   const html = renderToStaticMarkup(React.createElement(ui.ToolRail, { tool: 'select', ready: false, hasPreview: false, busy: false, onTool() {}, onZoom() {} }));
   const buttons = html.match(/<button\b[\s\S]*?<\/button>/g);
   const manual = buttons.find(button => button.includes('Select text area manually'));
-  const mask = buttons.find(button => button.includes('Magic Cleaning Brush'));
+  const mask = buttons.find(button => button.includes('Correct prepared mask'));
   assert.match(manual, /disabled=""/);
   assert.match(mask, /disabled=""/);
-  for (const label of ['Vector Pen', 'Clone Stamp', 'Typography', 'Eyedropper', 'Line-Art']) assert.match(buttons.find(button => button.includes(label)), /disabled=""/);
+  assert.equal(buttons.length, 6);
+  assert.doesNotMatch(html, /PLANNED|Clone Stamp|Vector Pen/);
 });
 test('Script Matrix never fabricates OCR or an executable translation', () => {
   const document = { bubbles: [{ id: 'fixture-id', rect: [0, 0, 50, 50], review: 'Needs Review', cleaning: 'Needs Review', kind: 'Unclassified', source: 'Shima V1', confidence: null }], textRegions: [] };
   const html = renderToStaticMarkup(React.createElement(ui.InspectorDock, { document, selected: new Set(), onSelect() {}, tab: 'Script', onTab() {}, onCollapse() {}, layerControls: null, children: null }));
-  assert.match(html, /No OCR proposal/);
-  assert.match(html, /No confidence/);
-  assert.match(html, /<textarea[^>]*disabled=""/);
+  assert.match(html, /Properties/);
+  assert.doesNotMatch(html, /Script Matrix|No OCR proposal|No confidence|Translation is not available/);
   assert.doesNotMatch(html, /93\.6%|CUDA Active|8GB/);
 });
 test('Saved only reflects a verified persisted path, not merely clean state', () => {
   const props = { document: null, busy: false, step: 1, onStep() {}, onOpen() {}, onSave() {}, onExport() {}, onUndo() {}, onRedo() {}, onSettings() {}, onScan() {}, onPreview() {}, onClean() {}, canScan: false, canPreview: false, canClean: false, onToggleLeft() {}, onToggleRight() {}, onPreset() {} };
   const doc = { sourceName: 'fixture.png', dirty: false, savedPath: null };
-  const render = document => renderToStaticMarkup(React.createElement(ui.StudioHeader, { ...props, document }));
-  assert.match(render(doc), />Unmodified<\/small>/);
-  assert.match(render({ ...doc, savedPath: 'verified.mangaclean' }), />Saved<\/small>/);
-  assert.match(render({ ...doc, savedPath: 'verified.mangaclean', dirty: true }), />Unsaved<\/small>/);
+  const render = document => renderToStaticMarkup(React.createElement(ui.EngineStatusBar, { ...props, document, connected:true, selected:0, controller:{}, job:null, onCancel(){} }));
+  assert.match(render(doc), />Unmodified<\/span>/);
+  assert.match(render({ ...doc, savedPath: 'verified.mangaclean' }), />Saved<\/span>/);
+  assert.match(render({ ...doc, savedPath: 'verified.mangaclean', dirty: true }), />Unsaved<\/span>/);
 });

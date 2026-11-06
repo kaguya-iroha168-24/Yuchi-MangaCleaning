@@ -12,7 +12,7 @@ export const TextRegionOverlay = memo(function TextRegionOverlay(props: {
   onSelect: (id: string) => void; onEdit: (region: RegionObject) => void;
   onCommit: (id: string, rect: RegionRect) => Promise<void>; onGesture: (active: boolean) => void;
   onPointer: (point: Point) => void; onWheel: (event: WheelEvent) => void;
-  typography?: boolean; images?: Record<string, { png: string }>;
+  candidate?: boolean; reviewIds?: Set<string>; selectedIds?: Set<string>; onMultiSelect?: (id: string, multi: boolean) => void; typography?: boolean; images?: Record<string, { png: string }>;
 }) {
   const draft = useSyncExternalStore(props.controller.subscribe, props.controller.getSnapshot);
   const gesture = useRef<Gesture | null>(null);
@@ -33,6 +33,7 @@ export const TextRegionOverlay = memo(function TextRegionOverlay(props: {
   const begin = (event: React.PointerEvent<HTMLElement>, region: RegionObject, handle: RegionHandle) => {
     if (!props.enabled || event.button !== 0) return;
     event.preventDefault(); event.stopPropagation();
+    if (props.candidate && (event.ctrlKey || event.metaKey)) { props.onMultiSelect?.(region.id, true); return; }
     if (props.selected !== region.id) props.onSelect(region.id);
     event.currentTarget.focus({ preventScroll: true });
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -52,9 +53,9 @@ export const TextRegionOverlay = memo(function TextRegionOverlay(props: {
       const left = props.offset.x + x * props.scale, top = props.offset.y + y * props.scale;
       const w = width * props.scale, h = height * props.scale;
       if (left + w < 0 || top + h < 0 || left > props.width || top > props.height) return null;
-      const active = region.id === props.selected && props.showSelection;
-      return <div key={region.id} data-text-region={props.typography ? undefined : region.id} data-dialogue={props.typography ? region.id : undefined} role="button" aria-label={`${props.typography ? 'Dialogue' : 'Text region'} ${String(index + 1).padStart(2, '0')}: ${region.text || 'empty text'}`} aria-pressed={active} tabIndex={props.enabled ? 0 : -1}
-        className={`text-region-box ${props.typography ? 'typography-region-box' : ''} ${active ? 'is-selected' : ''}`} style={{ left, top, width: w, height: h, pointerEvents: props.enabled ? 'auto' : 'none' }}
+      const active = (props.selectedIds ? props.selectedIds.has(region.id) : region.id === props.selected) && props.showSelection;
+      return <div key={region.id} data-text-region={props.typography ? undefined : region.id} data-dialogue={props.typography ? region.id : undefined} role="button" aria-label={`${props.candidate ? 'Bubble' : props.typography ? 'Dialogue' : 'Text region'} ${String(index + 1).padStart(2, '0')}: ${region.text || 'empty text'}`} aria-pressed={active} tabIndex={props.enabled ? 0 : -1}
+        className={`text-region-box ${props.typography ? 'typography-region-box' : ''} ${props.candidate ? 'candidate-region-box' : ''} ${props.reviewIds?.has(region.id) ? 'needs-review' : ''} ${active ? 'is-selected' : ''}`} style={{ left, top, width: w, height: h, pointerEvents: props.enabled ? 'auto' : 'none' }}
         onPointerDown={event => begin(event, region, 'move')}
         onPointerMove={event => { const next = position(event); if (next && gesture.current?.moved) props.controller.update({ id: region.id, rect: next }); const bounds = event.currentTarget.getBoundingClientRect(); const native = { x: x + (event.clientX - bounds.left) / props.scale, y: y + (event.clientY - bounds.top) / props.scale }; if (!gesture.current) props.onPointer(native); }}
         onPointerUp={event => {
@@ -70,6 +71,7 @@ export const TextRegionOverlay = memo(function TextRegionOverlay(props: {
         onPointerCancel={cancel} onLostPointerCapture={() => { if (gesture.current) cancel(); }}
         onDoubleClick={event => { if (props.enabled) { event.stopPropagation(); props.onEdit(region); } }}
         onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); cancel(); } if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); props.onSelect(region.id); props.onEdit(region); } }}>
+        {props.candidate && <span className="candidate-number">{String(index+1).padStart(2,'0')}{props.reviewIds?.has(region.id) ? ' · Review' : ''}</span>}
         {props.images?.[region.id] && <img className="typography-raster" src={`data:image/png;base64,${props.images[region.id].png}`} draggable={false} alt="" />}
         {active && handles.map(handle => <span key={handle} role="button" tabIndex={props.enabled ? 0 : -1} aria-label={`Resize ${props.typography ? 'dialogue' : 'text region'} ${handle}`} className={`text-region-handle handle-${handle}`} onPointerDown={event => begin(event, region, handle)} />)}
       </div>;

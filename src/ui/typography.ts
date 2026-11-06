@@ -1,7 +1,8 @@
 import type { Api, Dialogue, DocumentState, State, TypographyRender } from '../api';
 import { RegionInteraction, type RegionRect } from './regionEditing';
 
-type Snapshot = { drafts: Record<string, Dialogue>; layers: Record<string, TypographyRender>; errors: Record<string, string>; loading: Record<string, boolean> };
+type TypographyStyle = Pick<Dialogue, 'family' | 'weight' | 'size' | 'minimum_size' | 'alignment' | 'color' | 'auto_fit' | 'padding'>;
+type Snapshot = { drafts: Record<string, Dialogue>; layers: Record<string, TypographyRender>; errors: Record<string, string>; loading: Record<string, boolean>; copiedStyle: TypographyStyle | null };
 export const dialogueFields = ({ id: _id, ...fields }: Dialogue) => fields;
 export const fontSizePatch = (text: Dialogue, size: number) => ({ size: Math.max(8, Math.min(144, Math.round(size))), minimum_size: Math.min(Math.max(8, Math.round(size)), text.minimum_size) });
 export function cardDialogue(dialogues: Dialogue[], bubbleId: string, selected: string | null): Dialogue | null {
@@ -13,9 +14,10 @@ export const rasterKey = (text: Dialogue) => JSON.stringify({ ...dialogueFields(
 // Transient typography changes subscribe locally; App is notified only when dirty changes.
 export class TypographySession {
   readonly interaction = new RegionInteraction();
-  private snapshot: Snapshot = { drafts: {}, layers: {}, errors: {}, loading: {} };
+  private snapshot: Snapshot = { drafts: {}, layers: {}, errors: {}, loading: {}, copiedStyle: null };
   private saved = new Map<string, Dialogue>();
   private keys = new Map<string, string>();
+  private bubbleGeometry = new Map<string, string>();
   private queue = new Map<string, { text: Dialogue; key: string; page: string }>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private listeners = new Set<() => void>();
@@ -36,8 +38,9 @@ export class TypographySession {
     if (page !== this.page) {
       this.page = page; this.keys.clear(); this.queue.clear(); this.saved.clear();
       this.timers.forEach(clearTimeout); this.timers.clear();
-      this.snapshot = { drafts: {}, layers: {}, errors: {}, loading: {} }; this.interaction.flush(null);
+      this.snapshot = { drafts: {}, layers: {}, errors: {}, loading: {}, copiedStyle: this.snapshot.copiedStyle }; this.interaction.flush(null);
     }
+    this.bubbleGeometry = new Map((document?.bubbles ?? []).map(bubble => [bubble.id, `${bubble.rect.join(',')}:${bubble.containerPixels}`]));
     const items = document?.dialogues ?? [];
     this.saved = new Map(items.map(text => [text.id, text]));
     const drafts = { ...this.snapshot.drafts }, layers = { ...this.snapshot.layers }, errors = { ...this.snapshot.errors }, loading = { ...this.snapshot.loading };
@@ -45,11 +48,22 @@ export class TypographySession {
       if (!this.saved.has(id)) { delete drafts[id]; delete layers[id]; delete errors[id]; delete loading[id]; this.queue.delete(id); this.keys.delete(id); clearTimeout(this.timers.get(id)); this.timers.delete(id); }
       else if (drafts[id] && JSON.stringify(drafts[id]) === JSON.stringify(this.saved.get(id))) delete drafts[id];
     }
-    this.snapshot = { drafts, layers, errors, loading };
+    this.snapshot = { ...this.snapshot, drafts, layers, errors, loading };
     for (const text of items) this.request(drafts[text.id] ?? text);
     this.publish();
   }
   select(id: string | null) { this.priority = id; }
+  copyStyle(id: string) {
+    const text = this.snapshot.drafts[id] ?? this.saved.get(id); if (!text) return;
+    const { family, weight, size, minimum_size, alignment, color, auto_fit, padding } = text;
+    this.snapshot = { ...this.snapshot, copiedStyle: { family, weight, size, minimum_size, alignment, color, auto_fit, padding } };
+    this.publish();
+  }
+  async pasteStyle(id: string) {
+    if (!this.snapshot.copiedStyle || !(this.snapshot.drafts[id] ?? this.saved.get(id))) return;
+    this.edit(id, this.snapshot.copiedStyle);
+    await this.flush();
+  }
   async abandon() {
     this.timers.forEach(clearTimeout); this.timers.clear(); this.queue.clear();
     if (this.commit) { try { await this.commit; } catch { /* Opening a confirmed replacement remains possible after a failed commit. */ } }
@@ -100,7 +114,7 @@ export class TypographySession {
   }
   private request(text: Dialogue) {
     if (!text || !this.api || !this.page || this.disposed) return;
-    const key = rasterKey(text); if (this.keys.get(text.id) === key) return;
+    const key = rasterKey(text) + (text.auto_fit && text.bubble_id ? this.bubbleGeometry.get(text.bubble_id) ?? '' : ''); if (this.keys.get(text.id) === key) return;
     this.keys.set(text.id, key); this.queue.set(text.id, { text, key, page: this.page });
     this.snapshot = { ...this.snapshot, loading: { ...this.snapshot.loading, [text.id]: true } }; this.publish();
     void this.drain();

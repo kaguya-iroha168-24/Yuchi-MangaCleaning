@@ -1,0 +1,134 @@
+"""Chapter routes around the established single-page editor and codecs."""
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+from hashlib import sha256
+import json
+import re
+from fastapi import HTTPException, Request, UploadFile
+from pydantic import BaseModel, Field
+from mangaclean.services.chapter import Chapter, natural_key
+from mangaclean.services.export_preflight import write_verified_image
+
+
+def chapter_state(store):
+    chapter=getattr(store,'chapter',None)
+    if not chapter or not store.document or chapter.active!=store.document.region_graph.page_id:return None
+    return chapter.summary(store)
+
+
+def open_chapter(m,path):
+    chapter=Chapter.load(path,m.CACHE,m.Document)
+    chapter.activate(m.store,chapter.initial_active,flush=False)
+    m.store.chapter=chapter;m.store.preview=None;m.clear_render_cache()
+
+
+def save_chapter(m):
+    chapter=m.store.chapter
+    folder=m.ROOT/'outputs/projects';folder.mkdir(parents=True,exist_ok=True)
+    path=folder/('chapter-'+uuid4().hex+'.mangaclean')
+    chapter.save(m.store,path)
+    return dict(path=str(path),sha256=sha256(path.read_bytes()).hexdigest(),bytes=path.stat().st_size,
+                revision=m.store.document.revision,verified=True,state=m.public_state())
+
+
+class ExportPages(BaseModel):
+    kind: str='png'
+    ids: list[str]=Field(default_factory=list,max_length=200)
+
+
+def register(namespace):
+    m=SimpleNamespace(**namespace)
+    app,store=m.app,m.store
+    store.chapter=None
+
+    @app.post('/v1/pages/import')
+    async def import_pages(request: Request,files: list[UploadFile]):
+        m.require_auth(request.headers.get('authorization'))
+        if not 1<=len(files)<=200:raise HTTPException(422,'Select 1–200 pages.')
+        append=request.query_params.get('append')=='true'
+        paths=[]
+        with store.lock:
+            m.check_idle()
+            if not append and store.document and (store.document.dirty or (chapter_state(store) or {}).get('dirty')) and request.query_params.get('discard')!='true':
+                raise HTTPException(409,'Save the current project before replacing its pages.')
+            identity=(id(store.document),store.document.revision if store.document else 0)
+        try:
+            for file in sorted(files,key=lambda f:natural_key(f.filename or '')):
+                if Path(file.filename or '').suffix.lower() not in {'.png','.jpg','.jpeg'}:raise HTTPException(422,'Chapter import supports PNG/JPEG only.')
+                paths.append((Path(file.filename).name,await m.bounded_upload(file,100_000_000)))
+            with store.lock:
+                m.check_idle()
+                if identity!=(id(store.document),store.document.revision if store.document else 0):raise HTTPException(409,'The current page changed during import. Retry.')
+                chapter=getattr(store,'chapter',None) if append else None
+                if chapter is None:
+                    chapter=Chapter(m.CACHE,m.Document)
+                    if append and store.document:
+                        chapter.active=chapter.add(store.document)
+                        chapter.pages[-1]['dirty']=store.document.dirty
+                if len(chapter.pages)+len(paths)>200:raise HTTPException(422,'Chapter supports at most 200 pages.')
+                # Validate every input before changing the live chapter. Decoded
+                # images are released on each iteration, not retained as a list.
+                staged=Chapter(m.CACHE,m.Document)
+                for name,path in paths:
+                    source=m.read_image(path)
+                    doc=m.Document(source,source.copy(),name,m.np.zeros(source.shape[:2],m.np.uint8),region_graph=m.RegionGraph.for_legacy(source,name),dirty=True)
+                    staged.add(doc)
+                import shutil
+                for page in staged.pages:
+                    shutil.copyfile(staged.folder/(page['id']+'.mangaclean'),chapter.folder/(page['id']+'.mangaclean'))
+                    chapter.pages.append(page)
+                old_active=chapter.active
+                store.chapter=chapter
+                if old_active is None:chapter.activate(store,chapter.pages[0]['id'],flush=False)
+                store.preview=None;m.clear_render_cache()
+                return m.public_state()
+        except (ValueError,OSError,KeyError) as error:raise HTTPException(422,str(error)) from error
+        finally:
+            for _,path in paths:path.unlink(missing_ok=True)
+
+    @app.post('/v1/pages/{identifier}/activate')
+    def activate_page(identifier: str,request: Request):
+        m.require_auth(request.headers.get('authorization'))
+        with store.lock:
+            m.check_idle();chapter=getattr(store,'chapter',None)
+            if not chapter or not any(p['id']==identifier for p in chapter.pages):raise HTTPException(404,'Page not found.')
+            try:chapter.activate(store,identifier)
+            except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from error
+            m.clear_render_cache();return m.public_state()
+
+    @app.post('/v1/pages/export')
+    def export_pages(payload: ExportPages,request: Request):
+        m.require_auth(request.headers.get('authorization'))
+        if payload.kind not in {'png','jpeg'}:raise HTTPException(422,'Choose PNG or JPEG.')
+        with store.lock:
+            m.check_idle();chapter=getattr(store,'chapter',None)
+            if not chapter:raise HTTPException(409,'Open a chapter first.')
+            ids=payload.ids or [p['id'] for p in chapter.pages]
+            if len(set(ids))!=len(ids) or any(not any(p['id']==i for p in chapter.pages) for i in ids):raise HTTPException(422,'Invalid page selection.')
+            chapter.flush(store)
+            folder=m.ROOT/'outputs/exports'/('chapter-'+uuid4().hex);folder.mkdir(parents=True)
+            written=[];errors=[]
+            for index,page in enumerate(chapter.pages,1):
+                if page['id'] not in ids:continue
+                try:
+                    doc=store.document if page['id']==chapter.active else chapter.decode(page['id'])
+                    m.require_export_ready(doc)
+                    image=m.composite(doc.working,doc.dialogues,doc.bubbles)
+                    stem=re.sub(r'[^A-Za-z0-9_-]+','-',Path(page['name']).stem)[:70] or 'page'
+                    path=folder/f'{index:03d}-{stem}.{ "png" if payload.kind=="png" else "jpg" }'
+                    if path.exists():raise FileExistsError('Export file already exists.')
+                    digest,size=write_verified_image(path,image)
+                    written.append(dict(pageId=page['id'],path=str(path),sha256=digest,bytes=size))
+                except (ValueError,OSError,m.TypesettingUnavailable,HTTPException) as error:
+                    errors.append(dict(pageId=page['id'],message=str(getattr(error,'detail',error))))
+            return dict(directory=str(folder),files=written,errors=errors,verified=not errors,state=m.public_state())
+
+    @app.post('/v1/bubbles/{identifier}/exclude')
+    def exclude_bubble(identifier: str,request: Request):
+        m.require_auth(request.headers.get('authorization'))
+        with store.lock:
+            m.check_idle(editing=True);doc=store.require();bubble=m.bubble_by_id(identifier)
+            store.capture(('bubbles',));bubble.provenance=dict(bubble.provenance,excluded=True)
+            doc.revision+=1;doc.dirty=True;store.preview=None
+            return m.public_state()

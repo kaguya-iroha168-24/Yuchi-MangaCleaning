@@ -1,0 +1,84 @@
+/* Sumi & Hikari: workspace chrome only. Never affects exported image pixels. */
+:root {
+  --sumi-background:#12171C; --sumi-panel:#1B222A; --sumi-raised:#26303A;
+  --sumi-canvas:#242C34; --sumi-border:#3A4752;
+  --washi-primary:#F1EEE5; --text-secondary:#B4C0C7; --text-disabled:#77838B;
+  --jade-primary:#82C6B7; --mist-candidate:#81B9D0; --coral-selected:#F2A08C; --amber-review:#E5B970;
+  --studio-primary:var(--sumi-background); --studio-panel:var(--sumi-panel);
+  --studio-elevated:var(--sumi-raised); --studio-canvas:var(--sumi-canvas);
+  --studio-border:var(--sumi-border); --studio-text:var(--washi-primary);
+  --studio-muted:var(--text-secondary); --studio-accent:var(--jade-primary);
+  --studio-cleaned:var(--jade-primary); --studio-ready:var(--jade-primary);
+  --studio-translated:var(--amber-review); --studio-redraw:var(--coral-selected);
+  --studio-header-height:52px; --studio-inspector-width:300px;
+}
+body {min-width:720px;background:var(--sumi-background);color:var(--washi-primary)}
+.app {font-size:13px;min-height:480px}
+button,input,select,textarea {font:inherit}
+button,select,input,textarea {border:1px solid var(--sumi-border);border-radius:4px;color:var(--washi-primary);background:var(--sumi-raised)}
+button {min-height:30px;padding:4px 8px;transition:background-color 160ms,border-color 160ms}
+button:hover:not(:disabled) {background:var(--sumi-border)}
+button:active:not(:disabled) {background:var(--sumi-background)}
+button:disabled {color:var(--text-disabled);cursor:not-allowed;opacity:.7}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,[tabindex]:focus-visible {outline:2px solid var(--jade-primary);outline-offset:2px}
+::selection {background:var(--jade-primary);color:var(--sumi-background)}
+* {scrollbar-color:var(--sumi-border) var(--sumi-panel);scrollbar-width:thin;caret-color:var(--jade-primary)}
+.studio-brand strong {font-size:13px;letter-spacing:0}
+.studio-brand small {font-size:12px;letter-spacing:0;color:var(--text-secondary)}
+.studio-project {max-width:180px;flex:1}
+.studio-project>span {font-size:13px}
+.header-actions {display:flex;gap:4px;align-items:center;margin-inline-start:auto;flex:none}
+.primary,.studio-action.primary {background:var(--jade-primary);color:var(--sumi-background);border-color:var(--jade-primary)}
+.primary:hover:not(:disabled) {background:#A0D6CA;color:var(--sumi-background)}
+.chrome-button.active {color:var(--jade-primary);background:var(--sumi-raised);border-color:var(--jade-primary)}
+.view-mode-controls .active {color:var(--jade-primary);background:var(--sumi-raised);border-color:var(--jade-primary)}
+.page-entry {background:var(--sumi-panel);border:1px solid var(--sumi-border)}
+.page-entry.active {border-color:var(--jade-primary)}
+.studio-header button,.context-controls button,.dock-heading strong,.canvas-controls button,.pane-caption {font-size:13px;letter-spacing:0}
+.page-entry>strong,.page-entry>small,.section-note,.availability-note {font-size:12px}
+.tool-rail {justify-content:flex-start;padding-top:8px;gap:8px;width:52px;flex:none}
+.tool-rail .chrome-button {width:36px;height:36px}
+.context-tool-name {color:var(--text-secondary)}
+.stage-host,.canvas-pane,.empty-workspace {background:var(--sumi-canvas)}
+.empty-content h1 {font-size:20px;font-weight:500;letter-spacing:0}
+.empty-content p {font-size:13px;max-width:40ch;color:var(--text-secondary)}
+.empty-content {gap:12px}
+.empty-icon,.empty-hint {display:none}
+.right-dock,.dock-scroll {min-width:0}
+.dock-scroll {overflow:auto;padding:12px}
+.dock-heading strong,.selection-properties h2,.selection-properties h3 {letter-spacing:0;text-transform:none}
+.selection-properties h2 {font-size:16px;margin:0 0 12px}
+.selection-properties h3 {font-size:13px;margin:16px 0 8px}
+.selection-properties section {margin-bottom:16px}
+.selection-properties label {display:block;color:var(--text-secondary);font-size:12px;margin:8px 0}
+.selection-properties textarea,.selection-properties select {width:100%;min-width:0}
+.selection-properties textarea {min-height:72px;padding:8px;resize:vertical;color:var(--washi-primary)}
+.selection-properties button {margin:2px;white-space:normal}
+.selection-properties .typography-properties {padding:0}
+.selection-properties .control-pair {min-width:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+.selection-properties input {min-width:0;max-width:100%}
+.selection-properties .typography-layer-list button {overflow-wrap:anywhere;max-width:100%}
+.review-actions {display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.review-label,.warning-note {color:var(--amber-review)}
+details {margin:12px 0} summary {cursor:pointer;color:var(--text-secondary);padding:8px 0}
+.engine-statusbar {font-size:12px;color:var(--text-secondary)}
+.coordinate-status {display:none}
+.preferences-dialog {width:min(720px,94vw)}
+.preferences-layout {grid-template-columns:160px minmax(0,1fr)}
+.preferences-layout nav button[aria-current=page] {color:var(--jade-primary);background:var(--sumi-raised)}
+.preferences-content {min-width:0}
+.text-region-box.is-selected {border-color:var(--coral-selected);box-shadow:0 0 0 1px #12171C}
+.text-region-handle {width:24px;height:24px;background:transparent!important;border:0!important;box-shadow:none!important}
+.text-region-handle:after {content:'';position:absolute;inset:7px;background:var(--coral-selected);border:1px solid #12171C}
+.candidate-region-box {border:1.5px solid var(--mist-candidate);box-shadow:0 0 0 1px #12171C;background:#81B9D00D}
+.candidate-region-box.needs-review {border-color:var(--amber-review);border-style:dashed}
+.candidate-region-box.is-selected {border:2px solid var(--coral-selected);background:#F2A08C17}
+.candidate-number {position:absolute;left:0;top:-22px;padding:2px 4px;color:var(--washi-primary);background:#12171C;font-size:12px;white-space:nowrap}
+.handle-nw,.handle-w,.handle-sw {left:-12px}
+.handle-ne,.handle-e,.handle-se {right:-12px}
+.handle-nw,.handle-n,.handle-ne {top:-12px}
+.handle-sw,.handle-s,.handle-se {bottom:-12px}
+.handle-n,.handle-s {left:calc(50% - 12px)}
+.handle-w,.handle-e {top:calc(50% - 12px)}
+@media(max-width:1120px) {.studio-project{max-width:100px}.studio-brand small{display:none}.studio-header{gap:4px;padding:0 6px}.header-actions button{font-size:12px;padding:4px}.left-dock-container{display:none}}
+@media(prefers-reduced-motion:reduce) {*{transition:none!important;animation:none!important}}
