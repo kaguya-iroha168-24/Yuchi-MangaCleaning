@@ -90,33 +90,54 @@ def sha256(path):
     return value.hexdigest()
 
 
+def automatic_device(torch):
+    if torch.cuda.is_available():
+        free, _ = torch.cuda.mem_get_info(0)
+        warmed = _MODEL_KEY is not None and _MODEL_KEY[2] == 'cuda:0'
+        if free >= (1.5 if warmed else 2.5) * 2**30:
+            return 'cuda:0'
+    return 'cpu'
+
+
 def infer(request):
     global _MODEL, _MODEL_KEY
+    started = perf_counter()
     import cv2
     import numpy as np
     import torch
     import ultralytics
     from ultralytics import YOLO
+    import_s = perf_counter() - started
 
+    started = perf_counter()
     checkpoint = Path(request['checkpoint']).resolve(strict=True)
     checksum = sha256(checkpoint)
     if checksum != request['checkpoint_sha256']:
         raise ValueError('Checkpoint hash differs from the configured approved model.')
+    verify_s = perf_counter() - started
+    started = perf_counter()
     image = cv2.imdecode(np.frombuffer(Path(request['input']).read_bytes(), np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError('Invalid native inference image.')
+    decode_s = perf_counter() - started
+    started = perf_counter()
     device = request['device']
     if device == 'auto':
-        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        device = automatic_device(torch)
     if device in (0,'0','cuda'):device='cuda:0'
     if device not in('cpu','cuda:0'):raise ValueError('Only CPU or NVIDIA CUDA device 0 is supported.')
     cuda = device != 'cpu'
-    if not cuda and request.get('task')=='segment':torch.set_num_threads(min(4,os.cpu_count()or 1))
+    if not cuda and request.get('task') == 'segment':
+        cpus = os.cpu_count() or 1
+        threads = min(8, max(1, cpus - 1))
+        if torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
     if cuda:
         if not torch.cuda.is_available():raise RuntimeError('CUDA is unavailable in the selected inference runtime.')
         torch.cuda.set_device(device)
         torch.cuda.init()
         if _MODEL is None:torch.cuda.reset_peak_memory_stats(device)
+    device_s = perf_counter() - started
     started = perf_counter()
     key = (str(checkpoint), checksum, str(device))
     same_weights=_MODEL is not None and _MODEL_KEY[:2]==key[:2]
@@ -178,10 +199,11 @@ def infer(request):
         depth_multiple=architecture.get('depth_multiple'),
         parameters=sum(p.numel() for p in model.model.parameters()), names=names,
         input_shape=list(image.shape), output_shape=output_shape, device=str(device),
-        input_pixels_sha256=hashlib.sha256(image.tobytes()).hexdigest(),
+        input_pixels_sha256=hashlib.sha256(image).hexdigest(),
         device_name=torch.cuda.get_device_name(device) if cuda else 'CPU',
         model_reused=cached,device_changed=device_changed,cpu_threads=torch.get_num_threads(),
         load_s=load_s, predict_s=predict_s, framework_speed_ms=speed,
+        runtime_import_s=import_s, checkpoint_verify_s=verify_s, input_decode_s=decode_s, device_setup_s=device_s,
         torch_version=torch.__version__, ultralytics_version=ultralytics.__version__,
         confidence=request['confidence'], iou=request['iou'], image_size=request['image_size'],
         vram_peak_mb=torch.cuda.max_memory_allocated(device)/1024**2 if cuda else None,

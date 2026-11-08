@@ -35,7 +35,7 @@ def detect_with_fallback(provider, source, working, device, cancel: Event, on_fa
     batch.metadata.update(requested_device=device, effective_device=effective, device_attempts=attempts,
                           cpu_fallback=reason is not None, fallback_reason=reason)
     if device == 'auto' and effective == 'cpu' and reason is None:
-        batch.metadata['device_selection_reason'] = 'Auto selected CPU because CUDA was unavailable.'
+        batch.metadata['device_selection_reason'] = 'Auto selected CPU because CUDA was unavailable or GPU memory was limited.'
     # Ordinary Scan includes recovery; crop verification explicitly disables recursion.
     enabled = True if recovery_enabled is None else recovery_enabled
     if provider == SHIMA and enabled:

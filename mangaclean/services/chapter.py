@@ -35,34 +35,52 @@ class Chapter:
         self.id=uuid4().hex;self.folder=Path(cache)/('chapter-'+self.id)
         self.folder.mkdir(parents=True,exist_ok=False)
         self.pages=[];self.active=None;self.document_type=document_type;self.saved_path=None
+        self._persisted_stamp=None
 
     def row(self, identifier):
         return next(p for p in self.pages if p['id']==identifier)
 
-    def add(self, doc):
+    def add(self, doc, *, raw=False):
         if len(self.pages)>=200:raise ValueError('A chapter supports at most 200 pages.')
         identifier=doc.region_graph.page_id
         if any(p['id']==identifier for p in self.pages):
             doc.region_graph.page_id=identifier=uuid4().hex
+        page=self._page(doc)
+        save_project(self.folder/(identifier+'.mangaclean'),dict(doc.snapshot(),clean=None if raw else doc.working),fast_raster=raw)
+        self.pages.append(page)
+        return identifier
+
+    @staticmethod
+    def _page(doc):
         height,width=doc.source.shape[:2]
         thumb=cv2.resize(doc.source,(max(1,round(width*min(160/width,200/height))),max(1,round(height*min(160/width,200/height)))))
         ok,png=cv2.imencode('.png',thumb)
         if not ok:raise ValueError('Thumbnail encoding failed.')
-        page=dict(id=identifier,name=Path(doc.source_name).name,width=width,height=height,
+        return dict(id=doc.region_graph.page_id,name=Path(doc.source_name).name,width=width,height=height,
                   dirty=True,revision=doc.revision,bubbles=len(doc.bubbles),savedPath=None,
                   thumbnail=base64.b64encode(png).decode('ascii'),undo=[],redo=[])
-        save_project(self.folder/(identifier+'.mangaclean'),dict(doc.snapshot(),clean=doc.working))
-        self.pages.append(page)
-        return identifier
+
+    def _stamp(self, store):
+        # All committed content edits increment revision. History may change
+        # independently (capture before a failed edit), so track its identities too.
+        doc=store.require()
+        return (self.active,id(doc),doc.revision,doc.source_name,doc.active_text_id,
+                tuple(id(frame) for frame in store.undo),tuple(id(frame) for frame in store.redo))
 
     def flush(self, store):
         if self.active is None:return
         doc=store.require();page=self.row(self.active)
         if doc.region_graph.page_id!=self.active:raise ValueError('Active page identity mismatch.')
-        save_project(self.folder/(self.active+'.mangaclean'),dict(doc.snapshot(),clean=doc.working),overwrite=True)
         page.update(dirty=doc.dirty,revision=doc.revision,bubbles=len(doc.bubbles),savedPath=doc.saved_path)
+        stamp=self._stamp(store)
+        files=[self.active+'.mangaclean',*page['undo'],*page['redo']]
+        if stamp==self._persisted_stamp and all((self.folder/name).is_file() for name in files):return
+        # A failed write must remain retryable; never mark partial work persisted.
+        self._persisted_stamp=None
+        save_project(self.folder/(self.active+'.mangaclean'),dict(doc.snapshot(),clean=doc.working),overwrite=True)
+        histories={}
         for key in ('undo','redo'):
-            frames=list(getattr(store,key));page[key]=['']*len(frames)
+            frames=list(getattr(store,key));histories[key]=['']*len(frames)
             snapshot=copy(dict(doc.snapshot(),clean=doc.working))
             # Partial undo frames must be composed backwards. Combining an old
             # graph with today's later dialogue could otherwise break its IDs.
@@ -70,7 +88,9 @@ class Chapter:
                 frame=frames[index]
                 snapshot.update({('clean' if name=='working' else name):value for name,value in frame.items()})
                 name=f'{self.active}-{key}-{index}.mangaclean'
-                save_project(self.folder/name,snapshot,overwrite=True);page[key][index]=name
+                save_project(self.folder/name,snapshot,overwrite=True);histories[key][index]=name
+        page.update(histories)
+        self._persisted_stamp=stamp
 
     def decode(self, identifier):
         page=self.row(identifier);data=load_project(self.folder/(identifier+'.mangaclean'))
@@ -79,7 +99,8 @@ class Chapter:
         return self.document_type(source=source,working=data['clean'] if data['clean'] is not None else source.copy(),
             source_name=page['name'],mask=data['mask'],manual_mask=data['manual_mask'],bubbles=data['bubbles'],
             dialogues=data['dialogues'],region_graph=data['region_graph'],active_text_id=data['active_text_id'],
-            detection_runs=data['detection_runs'],dirty=page['dirty'],revision=page['revision'],saved_path=page.get('savedPath'))
+            detection_runs=data['detection_runs'],dirty=page['dirty'],revision=page['revision'],saved_path=page.get('savedPath'),
+            composition=data['composition'])
 
     def activate(self, store, identifier, flush=True):
         self.row(identifier)
@@ -92,18 +113,20 @@ class Chapter:
                 data=load_project(self.folder/name)
                 histories[key].append(dict(working=data['clean'] if data['clean'] is not None else data['source'],
                     mask=data['mask'],manual_mask=data['manual_mask'],bubbles=data['bubbles'],dialogues=data['dialogues'],
-                    region_graph=data['region_graph'],active_text_id=data['active_text_id'],detection_runs=data['detection_runs']))
+                    region_graph=data['region_graph'],active_text_id=data['active_text_id'],detection_runs=data['detection_runs'],
+                    composition=data['composition']))
         store.document=doc;self.active=identifier;store.preview=None
         for key,frames in histories.items():
             getattr(store,key).clear();getattr(store,key).extend(frames)
+        self._persisted_stamp=self._stamp(store)
 
     def summary(self, store):
         pages=[]
         for page in self.pages:
-            item={k:v for k,v in page.items() if k not in {'undo','redo','revision','savedPath'}}
+            item={k:v for k,v in page.items() if k not in {'undo','redo','savedPath'}}
             item['saved']=bool(page.get('savedPath') and Path(page['savedPath']).is_file())
             if page['id']==self.active:
-                item.update(dirty=store.document.dirty,bubbles=len(store.document.bubbles),saved=bool(store.document.saved_path and Path(store.document.saved_path).is_file()))
+                item.update(dirty=store.document.dirty,revision=store.document.revision,bubbles=len(store.document.bubbles),saved=bool(store.document.saved_path and Path(store.document.saved_path).is_file()))
             pages.append(item)
         return dict(id=self.id,activePageId=self.active,pages=pages,dirty=any(p['dirty'] for p in pages),savedPath=self.saved_path)
 
@@ -124,7 +147,7 @@ class Chapter:
                     with archive.open(page['entry']) as stream:
                         if hashlib.file_digest(stream,'sha256').hexdigest()!=page['sha256']:raise ValueError('Chapter verification failed.')
             with temporary.open('rb+') as stream:os.fsync(stream.fileno())
-            os.replace(temporary,path)
+            os.link(temporary,path)
         finally:
             if temporary.exists():temporary.unlink()
         self.saved_path=str(path)
@@ -156,9 +179,11 @@ class Chapter:
                 if data['region_graph'].page_id!=page['id']:raise ValueError('Page identity mismatch.')
                 doc=document_type(source=data['source'],working=data['clean'] if data['clean'] is not None else data['source'].copy(),
                     source_name=page['name'],mask=data['mask'],manual_mask=data['manual_mask'],bubbles=data['bubbles'],
-                    dialogues=data['dialogues'],region_graph=data['region_graph'],active_text_id=data['active_text_id'],detection_runs=data['detection_runs'])
-                chapter.add(doc);chapter.pages[-1]['dirty']=False
-                temporary.unlink()
+                    dialogues=data['dialogues'],region_graph=data['region_graph'],active_text_id=data['active_text_id'],detection_runs=data['detection_runs'],
+                    composition=data['composition'])
+                row=chapter._page(doc);row['dirty']=False
+                temporary.replace(chapter.folder/(page['id']+'.mangaclean'))
+                chapter.pages.append(row)
         # Upload staging paths are transient, not proof of a persisted user copy.
         chapter.id=manifest['id'];chapter.saved_path=None
         chapter.initial_active=manifest['active']

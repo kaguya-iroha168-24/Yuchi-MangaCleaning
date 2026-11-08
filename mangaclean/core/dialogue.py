@@ -2,6 +2,21 @@
 from dataclasses import dataclass, field
 from uuid import uuid4
 import math
+from .composition import typography_style
+
+
+def manga_lettering(width, height, page_shape, style=None):
+    """Shared native-pixel settings for generated and explicitly restyled dialogue."""
+    return {
+        'family': 'Komika Text Kaps',
+        'weight': 700,
+        'size': max(16, min(64, round(min(page_shape[:2]) * .024))),
+        'minimum_size': 8,
+        'alignment': 'center',
+        'auto_fit': True,
+        'padding': max(1, min(5, round(min(width, height) * .04))),
+        'style': {**(style or {}), 'italic': True, 'line_height': .84, 'letter_spacing': -.65},
+    }
 
 
 @dataclass
@@ -23,8 +38,13 @@ class Dialogue:
     auto_fit: bool = True
     source_region_id: str | None = None
     padding: int = 8  # native image pixels; typography only
+    style: dict = field(default_factory=dict)
+    locked: bool = False
 
     def validate(self):
+        self.style = typography_style(self.style)
+        if type(self.locked) is not bool:
+            raise ValueError('Dialogue lock must be boolean.')
         if self.source_region_id is not None and (not isinstance(self.source_region_id, str) or not 1 <= len(self.source_region_id) <= 100):
             raise ValueError('Invalid source TextRegion reference.')
         if type(self.padding) is not int or not 0 <= self.padding <= 512:

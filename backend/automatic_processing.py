@@ -16,6 +16,10 @@ def clean_page(m, check_cancel):
         records[bubble.id] = dict(status='skipped', reasons=reasons, semantic_verification=False)
 
     check_cancel()
+    if doc.composition.get('artwork_locked'):
+        for bubble in doc.bubbles:
+            skip(bubble, ['Working artwork is locked.'])
+        return summary
     for bubble in doc.bubbles:
         check_cancel()
         if bubble.provenance.get('excluded'):

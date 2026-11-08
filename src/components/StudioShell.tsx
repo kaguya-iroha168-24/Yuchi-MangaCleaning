@@ -1,12 +1,12 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { Aperture, ChevronLeft, ChevronRight, FolderOpen, Hand, LoaderCircle, MousePointer2, Paintbrush, PanelLeftClose, PanelRightClose, Redo2, Save, Settings2, Type, Undo2, ZoomIn } from 'lucide-react';
+import { Aperture, ChevronLeft, ChevronRight, FolderOpen, Hand, Languages, LoaderCircle, MousePointer2, Paintbrush, PanelLeftClose, PanelRightClose, Redo2, Save, Scan, Settings2, Type, Undo2, Upload } from 'lucide-react';
 import type { Bubble, DocumentState, Job } from '../api';
 import { LoupePreview, MiniMap, ViewportReadout } from './CanvasWorkspace';
 import type { ViewportController } from '../ui/viewport';
 
 export type StudioTool = 'select' | 'pan' | 'manual' | 'text' | 'mask-add' | 'mask-erase';
 export type WorkflowStep = 1 | 2 | 3 | 4;
-export type DockTab = 'Script' | 'Style' | 'Layers';
+export type DockTab = 'Script' | 'Style' | 'Layers' | 'Healing' | 'Image';
 export function FeatureBadge({ children = 'PLANNED' }: { children?: ReactNode }) { return <span className="feature-badge">{children}</span>; }
 export function ChromeButton({ label, children, active, disabled, onClick }: { label: string; children: ReactNode; active?: boolean; disabled?: boolean; onClick: () => void }) {
   return <button type="button" className={`chrome-button ${active ? 'active' : ''}`} title={label} aria-label={label} aria-pressed={active} disabled={disabled} onClick={onClick}>{children}</button>;
@@ -21,39 +21,66 @@ export function UndoRedoMenu({ document, busy, onUndo, onRedo, onSave, saveBusy 
 }
 
 export function StudioHeader(props: {
-  processing?: boolean; tools?: ReactNode; onOcr: () => void; canOcr: boolean; onAddText: () => void; document: DocumentState | null; busy: boolean; step: WorkflowStep; onStep: (step: WorkflowStep) => void;
-  onOpen: () => void; onSave: () => void; onExport: () => void; onUndo: () => void; onRedo: () => void; onSettings: () => void;
-  onScan: () => void; onProcess?: () => void; onPreview: () => void; onClean: () => void; canScan: boolean; canPreview: boolean; canClean: boolean;
-  onToggleLeft: () => void; onToggleRight: () => void; onPreset: (preset: 'Quick Clean' | 'Studio' | 'Review') => void;
+  processing?: boolean; tools?: ReactNode; document: DocumentState | null; busy: boolean;
+  onOpen: () => void; onOpenFolder?: () => void; onSave: () => void; onExport: () => void; onUndo: () => void; onRedo: () => void; onSettings: () => void; onTranslate?: (scope: 'page' | 'chapter') => void;
+  onProcess: () => void; onToggleAll: () => void; detectAll: boolean; pageCount: number; overlayMode: boolean; detectionMode: 'bubble' | 'text';
+  onClean: () => void; canScan: boolean; canClean: boolean;
+  pages?: { number: number; previous?: () => void; next?: () => void };
+  view?: ReactNode;
 }) {
   const file = props.document;
   const name = file?.projectName || file?.sourceName || 'Untitled workspace';
+  const allPages = props.detectAll && props.pageCount > 1;
+  const process = props.detectionMode === 'text' ? 'Detect Text Only' : props.overlayMode ? 'Detect Bubbles for Overlay' : 'Detect & Clean Bubbles';
   return <header className="studio-header">
     <div className="studio-brand"><Aperture size={22}/><div><strong>Yuchi Labs</strong><small>MangaClean Atelier</small></div></div>
     <div className="studio-project" title={name}><span>{name}</span></div>
-    <div className="header-actions"><button disabled={props.busy || props.processing} onClick={props.onOpen}>{props.onProcess ? 'Import' : 'Open'}</button><button className={props.onProcess ? 'primary' : undefined} disabled={!props.canScan} onClick={props.onProcess ?? props.onScan} title={props.onProcess ? 'Detect, recognize and safely clean the chosen pages. Automatic Indonesian translation is not configured.' : undefined}>{props.onProcess ? 'Process Automatically' : 'Scan & Detect'}</button>{props.onProcess && <details className="processing-options"><summary aria-label="Processing options" title="Processing options">▾</summary><div><button disabled={!props.canScan} onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');props.onScan();}}>Scan &amp; Detect only</button></div></details>}{props.tools}<button disabled={!props.canClean} onClick={props.onClean}>Clean Selected</button><button className={props.onProcess ? undefined : 'primary'} disabled={!file || props.busy || props.processing} onClick={props.onExport}>Export</button></div>
-    <UndoRedoMenu document={file} saveBusy={props.processing} busy={props.busy} onUndo={props.onUndo} onRedo={props.onRedo} onSave={props.onSave}/>
-    <ChromeButton label="Settings (Ctrl+,)" onClick={props.onSettings}><Settings2 size={17}/></ChromeButton>
+    <div className="header-actions">
+      <div className="header-import" role="group" aria-label="Import">
+        <ChromeButton label="Import images or project (Ctrl+O)" disabled={props.busy || props.processing} onClick={props.onOpen}><Upload size={16} /></ChromeButton>
+        {props.onOpenFolder && <ChromeButton label="Open folder as chapter" disabled={props.busy || props.processing} onClick={props.onOpenFolder}><FolderOpen size={16} /></ChromeButton>}
+      </div>
+      {props.tools}
+      <div className="header-detect" role="group" aria-label={props.detectionMode === "text" ? "Text detection" : "Bubble detection"}>
+        <ChromeButton disabled={!props.canScan} onClick={props.onProcess} label={`${process} on ${allPages ? `all ${props.pageCount} pages` : 'the current page'} (Ctrl+Shift+S)`}><Scan size={16} /></ChromeButton>
+        <button disabled={!props.canScan || props.pageCount < 2} aria-pressed={allPages} onClick={props.onToggleAll} title="Apply detection and Translate to all pages">All Pages</button>
+      </div>
+      <ChromeButton label={allPages ? `Translate all ${props.pageCount} pages` : 'Translate the current page'} disabled={!props.onTranslate || props.busy || props.processing} onClick={() => props.onTranslate?.(allPages ? 'chapter' : 'page')}><Languages size={16} /></ChromeButton>
+      <button disabled={!props.canClean} onClick={props.onClean} aria-label="Clean Selected" title="Clean Selected">Clean</button>
+    </div>
+    <div className="header-document-actions">
+      {props.view}
+      {props.pages && <div className="header-page-stepper" role="group" aria-label="Page navigation">
+        <ChromeButton label="Previous page" disabled={!props.pages.previous} onClick={()=>props.pages?.previous?.()}><ChevronLeft size={16}/></ChromeButton>
+        <output aria-label="Current page">{props.pages.number}/{props.pageCount}</output>
+        <ChromeButton label="Next page" disabled={!props.pages.next} onClick={()=>props.pages?.next?.()}><ChevronRight size={16}/></ChromeButton>
+      </div>}
+      <UndoRedoMenu document={file} saveBusy={props.processing} busy={props.busy} onUndo={props.onUndo} onRedo={props.onRedo} onSave={props.onSave}/>
+      <button disabled={!file || props.busy || props.processing} onClick={props.onExport}>Export</button>
+      <ChromeButton label="Settings (Ctrl+,)" onClick={props.onSettings}><Settings2 size={17}/></ChromeButton>
+    </div>
   </header>;
 }
 
-export function ToolRail({ tool, onTool, ready, hasPreview, busy, onZoom }: { tool: StudioTool; onTool: (tool: StudioTool) => void; ready: boolean; hasPreview: boolean; busy: boolean; onZoom: () => void }) {
+export function ToolRail({ tool, onTool, ready, hasPreview, busy, canPreview, onPreview, onHealing }: { tool: StudioTool; onTool: (tool: StudioTool) => void; ready: boolean; hasPreview: boolean; busy: boolean; canPreview: boolean; onPreview: () => void; onHealing: () => void }) {
   return <nav className="tool-rail top-tools" aria-label="Editing tools">
-    <ChromeButton label="Select / Move (V)" active={tool === 'select'} onClick={() => onTool('select')}><MousePointer2 size={19} /></ChromeButton>
-    <ChromeButton label="Correct prepared mask (M)" active={tool.startsWith('mask-')} disabled={!hasPreview || busy} onClick={() => onTool('mask-add')}><Paintbrush size={19}/></ChromeButton>
-    <ChromeButton label="Add text (T)" active={tool === 'text'} disabled={!ready || busy} onClick={() => onTool('text')}><Type size={19}/></ChromeButton>
-    <details className="tool-overflow" onKeyDown={event=>{if(event.key==='Escape'){event.currentTarget.open=false;event.currentTarget.querySelector<HTMLElement>('summary')?.focus();}}}><summary aria-label="More editing tools" title="More editing tools">•••</summary><div onClick={event=>event.currentTarget.closest('details')?.removeAttribute('open')}>
-      <ChromeButton label="Box Draw / Select text area manually (B)" active={tool === 'manual'} disabled={!ready || busy} onClick={() => onTool('manual')}><span className="box-tool-icon" /></ChromeButton>
-      <ChromeButton label="Pan canvas (H / Space + drag)" active={tool === 'pan'} onClick={() => onTool('pan')}><Hand size={19} /></ChromeButton>
-      <ChromeButton label="Zoom in (Z)" disabled={!ready} onClick={onZoom}><ZoomIn size={19} /></ChromeButton>
+    <ChromeButton label="Box Draw / Select text area manually (B)" active={tool === 'manual'} disabled={!ready || busy} onClick={() => onTool('manual')}><span className="box-tool-icon" /></ChromeButton>
+    <ChromeButton label="Add text (T)" active={tool === 'text'} disabled={!ready || busy} onClick={() => onTool('text')}><Type size={16} /></ChromeButton>
+    <details className="tool-overflow" onKeyDown={event=>{if(event.key==='Escape'){event.currentTarget.open=false;event.currentTarget.querySelector<HTMLElement>('summary')?.focus();}}}><summary aria-label="Mask and healing tools" title="Mask and healing tools"><Paintbrush size={16} /></summary><div onClick={event=>event.currentTarget.closest('details')?.removeAttribute('open')}>
+      <button disabled={!ready || busy || !canPreview} onClick={onPreview}>Preview Mask</button>
+      <button disabled={!hasPreview || busy} aria-pressed={tool.startsWith('mask-')} onClick={() => onTool('mask-add')}>Correct prepared mask (M)</button>
+      <button disabled={!ready || busy} onClick={onHealing}>Open Healing panel</button>
     </div></details>
-
+    <ChromeButton label="Select / Move (V)" active={tool === 'select'} disabled={!ready || busy} onClick={() => onTool('select')}><MousePointer2 size={16} /></ChromeButton>
+    <ChromeButton label="Pan canvas (H / Space + drag)" active={tool === 'pan'} disabled={!ready || busy} onClick={() => onTool('pan')}><Hand size={16} /></ChromeButton>
   </nav>;
 }
 
-export function ContextToolbar(props: { tool: StudioTool; children: ReactNode; leftCollapsed: boolean; rightCollapsed: boolean; onToggleLeft: () => void; onToggleRight: () => void }) {
-  const names: Record<StudioTool, string> = { select: 'Select / Move', pan: 'Pan Canvas', manual: 'Box Draw', text: 'Typography', 'mask-add': 'Mask Brush', 'mask-erase': 'Mask Brush · Erase' };
-  return <div className="context-toolbar" aria-label="Contextual Sub-Toolbar"><span className="context-tool-name">{names[props.tool]}</span><div className="context-controls">{props.children}</div><div className="context-dock-actions"><ChromeButton label={props.leftCollapsed ? 'Expand Page Navigator' : 'Collapse Page Navigator'} active={!props.leftCollapsed} onClick={props.onToggleLeft}><PanelLeftClose size={17} /></ChromeButton><ChromeButton label={props.rightCollapsed ? 'Expand Right Inspector' : 'Collapse Right Inspector'} active={!props.rightCollapsed} onClick={props.onToggleRight}><PanelRightClose size={17} /></ChromeButton></div></div>;
+export function ContextToolbar(props: { children: ReactNode; leftCollapsed: boolean; rightCollapsed: boolean; onToggleLeft: () => void; onToggleRight: () => void }) {
+  return <details className="tool-overflow workspace-options" onKeyDown={event=>{if(event.key==='Escape'){event.currentTarget.open=false;event.currentTarget.querySelector('summary')?.focus();}}}>
+    <summary aria-label="Workspace view and options" title="Workspace view and options"><PanelLeftClose size={16} /></summary>
+    <div>{props.children}<div className="context-dock-actions"><ChromeButton label={props.leftCollapsed ? 'Expand Page Navigator' : 'Collapse Page Navigator'} active={!props.leftCollapsed} onClick={props.onToggleLeft}><PanelLeftClose size={17} /></ChromeButton><ChromeButton label={props.rightCollapsed ? 'Expand Right Inspector' : 'Collapse Right Inspector'} active={!props.rightCollapsed} onClick={props.onToggleRight}><PanelRightClose size={17} /></ChromeButton></div></div>
+  </details>;
 }
 
 export function DockResizeHandle({ side, width, minimum, maximum, onResize }: { side: 'left' | 'right'; width: number; minimum: number; maximum: number; onResize: (width: number) => void }) {
@@ -80,11 +107,25 @@ export function PageNavigator({ document, originalUrl, original, working, contro
   </aside>;
 }
 
-export function InspectorDock({ onCollapse, children, layerControls }: { cardTypography?: (bubble: Bubble) => ReactNode; document: DocumentState | null; selected: Set<string>; onSelect: (id: string, multi: boolean) => void; tab: DockTab; onTab: (tab: DockTab) => void; onCollapse: () => void; children: ReactNode; layerControls: ReactNode; textControls?: ReactNode }) {
-  return <aside className="right-dock" aria-label="Properties"><div className="dock-heading"><strong>Properties</strong><ChromeButton label="Collapse properties" onClick={onCollapse}><ChevronRight size={16}/></ChromeButton></div><div className="dock-scroll">{children}<details><summary>Layers / workspace visibility</summary>{layerControls}</details></div></aside>;
+export function InspectorDock({ onCollapse, children, layerControls, healingControls, imageControls, tab, onTab }: { cardTypography?: (bubble: Bubble) => ReactNode; document: DocumentState | null; selected: Set<string>; onSelect: (id: string, multi: boolean) => void; tab: DockTab; onTab: (tab: DockTab) => void; onCollapse: () => void; children: ReactNode; layerControls: ReactNode; healingControls: ReactNode; imageControls?: ReactNode; textControls?: ReactNode }) {
+  const tabs = [
+    { key: 'Script', id: 'properties', label: 'Properties', content: children },
+    { key: 'Layers', id: 'layers', label: 'Layers', content: layerControls },
+    { key: 'Healing', id: 'healing', label: 'Healing', content: healingControls },
+    ...(imageControls ? [{ key: 'Image' as const, id: 'image', label: 'Image', content: imageControls }] : []),
+  ] as const;
+  const selected = tabs.findIndex(item => item.key === (tab === 'Style' ? 'Script' : tab));
+  return <aside className="right-dock" aria-label="Properties">
+    <div className="dock-tabs" role="tablist" aria-label="Inspector sections">{tabs.map((item,index)=><button key={item.id} id={`tab-${item.id}`} role="tab" aria-selected={selected===index} aria-controls={`inspector-${item.id}`} tabIndex={selected===index?0:-1} onClick={()=>onTab(item.key)} onKeyDown={event=>{
+      const keys: Record<string, number> = { ArrowLeft: (index + tabs.length - 1) % tabs.length, ArrowRight: (index + 1) % tabs.length, Home: 0, End: tabs.length - 1 };
+      const next = keys[event.key];
+      if (next === undefined) return;
+      event.preventDefault(); onTab(tabs[next].key); event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next]?.focus();
+    }}>{item.label}</button>)}<ChromeButton label="Collapse properties" onClick={onCollapse}><ChevronRight size={14}/></ChromeButton></div>
+    <div className="dock-scroll">{tabs.map((item,index)=><div key={item.id} id={`inspector-${item.id}`} role="tabpanel" aria-labelledby={`tab-${item.id}`} hidden={selected!==index}>{item.content}</div>)}</div></aside>;
 }
 
-export function EngineStatusBar({ connected, document, job, selected, controller, onCancel }: { connected: boolean; document: DocumentState | null; job: Job | null; selected: number; tool: StudioTool; controller: ViewportController; onCancel: () => void }) {
+export function EngineStatusBar({ connected, document, job, selected, controller, onCancel, zoom }: { connected: boolean; document: DocumentState | null; job: Job | null; selected: number; tool: StudioTool; controller: ViewportController; onCancel: () => void; zoom?: ReactNode }) {
   const running = job?.status === 'queued' || job?.status === 'running';
-  return <footer className="engine-statusbar">{!connected && <span role="status">Connecting…</span>}{running && <span className="engine-job"><LoaderCircle size={13} className="spin"/>{job.message || `${Math.round(job.progress*100)}%`} <button onClick={onCancel}>Cancel</button></span>}<span className="status-grow"/><span>{selected} selected</span><ViewportReadout controller={controller}/><span>{document ? document.dirty ? 'Unsaved' : document.savedPath ? 'Saved' : 'Unmodified' : 'Idle'}</span></footer>;
+  return <footer className="engine-statusbar"><span>{document ? document.dirty ? 'Unsaved' : document.savedPath ? 'Saved' : 'Unmodified' : 'Idle'}</span>{!connected && <span role="status">Connecting…</span>}{running && <span className="engine-job"><LoaderCircle size={13} className="spin"/>{job.message || `${Math.round(job.progress*100)}%`} <button onClick={onCancel}>Cancel</button></span>}<span className="status-grow"/>{zoom ?? <ViewportReadout controller={controller}/>}<span>{selected > 0 ? `${selected} selected · ` : ''}{document?.bubbles?.filter(bubble=>!bubble.excluded).length ?? 0} bubbles</span></footer>;
 }

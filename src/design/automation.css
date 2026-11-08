@@ -1,13 +1,62 @@
-.tool-overflow,.processing-options{position:relative;flex:none}
-.tool-overflow>summary,.processing-options>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:center;min-width:28px;min-height:32px;border:1px solid var(--sumi-border);border-radius:4px;color:var(--washi-primary);background:var(--sumi-panel)}
-.tool-overflow>summary::-webkit-details-marker,.processing-options>summary::-webkit-details-marker{display:none}
-.tool-overflow>summary:hover,.processing-options>summary:hover{background:var(--sumi-raised)}
-.tool-overflow>summary:focus-visible,.processing-options>summary:focus-visible{outline:2px solid var(--jade-primary);outline-offset:2px}
-.tool-overflow>div,.processing-options>div{position:absolute;top:calc(100% + 6px);right:0;z-index:60;display:flex;gap:6px;padding:8px;background:var(--sumi-panel);border:1px solid var(--sumi-border);border-radius:4px;box-shadow:0 8px 20px #0006;white-space:nowrap}
-.processing-options>div{min-width:160px}
-.processing-options>div button{width:100%;text-align:start}
-.chapter-page[aria-busy=true]{border-style:dashed;border-color:var(--amber-review)}
+.tool-overflow{position:relative;flex:none}
+.tool-overflow>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:center;min-width:28px;min-height:32px;border:1px solid var(--studio-border);border-radius:4px;color:var(--studio-text);background:var(--studio-panel)}
+.tool-overflow>summary::-webkit-details-marker{display:none}
+.tool-overflow>summary:hover{background:var(--studio-elevated)}
+.tool-overflow>summary:focus-visible{outline:2px solid var(--studio-accent);outline-offset:2px}
+.tool-overflow>div{position:absolute;top:calc(100% + 6px);right:0;z-index:60;display:flex;gap:6px;padding:8px;background:var(--studio-panel);border:1px solid var(--studio-border);border-radius:4px;box-shadow:0 8px 20px var(--studio-shadow);white-space:nowrap}
+.tool-overflow>div{min-width:160px;flex-direction:column}
+.tool-overflow>div button{width:100%;text-align:start}
+.tool-overflow>div{left:0;right:auto}
+.header-detect,.header-import{display:flex;gap:2px;align-items:center}
+.header-detect>button{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.editing-text-treatment{display:flex;gap:6px;flex-wrap:wrap}
+.header-detect>button[aria-pressed=true],.editing-text-treatment>button[aria-pressed=true]{border-color:var(--studio-accent);color:var(--studio-accent-ink);background:var(--studio-tint)}
+.chapter-page[aria-busy=true]{border-style:dashed;border-color:var(--studio-accent-ink)}
 .size-stepper{display:flex;align-items:end;gap:4px}
 .size-stepper>label{min-width:0;flex:1}
 .size-stepper>button{height:30px;min-width:26px;padding:4px}
 @media(max-width:1100px){.studio-project{max-width:70px}.studio-brand{gap:6px}.header-actions{gap:3px}.engine-job{max-width:60vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.studio-header {gap:8px;height:auto;min-height:var(--studio-header-height);padding-block:6px}
+.header-actions,.header-document-actions,.header-page-stepper {display:flex;align-items:center;gap:4px;flex:none}
+.header-actions {margin-inline-start:0;order:0}
+.studio-brand {order:1}
+.studio-brand small {display:none}
+.studio-project {order:2;min-width:0}
+.header-document-actions {margin-inline-start:auto;order:3}
+.header-page-stepper {border-inline-end:1px solid var(--studio-border);padding-inline-end:4px}
+.header-page-stepper output {min-width:36px;text-align:center;font-variant-numeric:tabular-nums;font-weight:650}
+.studio-header .chrome-button {background:var(--studio-elevated);color:var(--studio-text)}
+.studio-header .chrome-button.active {border-color:var(--studio-accent);color:var(--studio-accent-ink)}
+.studio-header .chrome-button:hover:not(:disabled) {background:var(--studio-hover)}
+.studio-header details {margin:0}
+.studio-header details>summary {padding:0}
+.empty-actions {display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
+.type-quick-actions {display:flex;flex-wrap:wrap;gap:4px}
+.selection-properties .type-quick-actions button {margin:0;min-width:32px}
+.type-quick-actions [aria-pressed=true] {color:var(--studio-on-accent);background:var(--studio-accent);border-color:var(--studio-accent)}
+.type-quick-actions [aria-pressed=true]:hover:not(:disabled) {color:var(--studio-on-accent);background:var(--studio-accent-hover)}
+.chapter-heading {border-bottom:1px solid var(--studio-border)}
+.chapter-heading button {padding:4px;min-height:26px;background:transparent;border-color:transparent}
+.chapter-page.active {background:transparent}
+.chapter-page button[aria-current=page] {color:var(--studio-text)}
+.chapter-page button:hover:not(:disabled) {background:var(--studio-elevated)}
+.workspace-options>div {right:0;left:auto}
+.workspace-options label {display:flex;align-items:center;justify-content:space-between;gap:6px}
+.workspace-options .view-mode-controls,.workspace-options .context-dock-actions {border:0;padding:0}
+.pane-caption {position:relative;justify-content:center}
+.pane-caption .pane-indicator {display:none}
+.pane-dimensions {position:absolute;right:8px;font-size:11px}
+.ruler-grid.rulers-hidden {grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+.engine-statusbar {gap:8px}
+.engine-statusbar .canvas-controls button {min-height:24px}
+.dock-tabs {gap:2px;padding-inline:6px}
+.dock-tabs .chrome-button {width:24px;min-height:24px;align-self:center;flex:none}
+.operation-overlay {position:fixed;z-index:110;background:var(--studio-scrim);pointer-events:auto}
+.operation-card {background:var(--studio-panel)}
+.operation-card p {font-weight:650}
+.operation-card progress {accent-color:var(--studio-accent)}
+.preferences-dialog {width:min(460px,calc(100vw - 44px));height:auto;max-height:calc(100dvh - 84px)}
+.preferences-dialog .preferences-layout>nav {width:auto}
+.studio-modal-backdrop:has(.preferences-dialog) {place-items:start end;padding-top:60px;backdrop-filter:none}
+@media(max-width:1050px){.studio-brand>div{display:none}}
+@media(max-width:900px){.studio-header{flex-wrap:wrap}.header-actions{order:4;flex-basis:100%;flex-wrap:wrap}.header-document-actions{flex-wrap:wrap}.pane-dimensions{display:none}}

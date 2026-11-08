@@ -11,6 +11,15 @@ publishing an installer. The Shima V1 checkpoint remains MangaLens Original weig
 The copied domain algorithms are not altered for the Tauri backend. The API adapter
 and frontend are new code in this workspace.
 
+Text only uses Ogkalu's Apache-2.0 comic text detector. The tested ONNX artifact is
+`detector-v4-s_int8.onnx` from [revision 16e8a62](https://huggingface.co/ogkalu/comic-text-and-bubble-detector/tree/16e8a622f91fabc6b5b65c96d32d1183f8843546).
+Its SHA-256 is `5fe9e4f576e49d4e7e8b0e029d6d3cdc252abd4694113e1cae120e62c931ea79`.
+For the local build, place it at `runtime/app/models/ogkalu/detector-v4-s_int8.onnx`
+and include the Apache-2.0 license beside the model. For development, the path is
+`models/ogkalu/detector-v4-s_int8.onnx` relative to the source workspace. The runtime
+dependencies are listed in `requirements.txt`. The model is loaded on the first
+Text only scan and runs on the local CPU.
+
 For parity validation, `.cache/shima-parity/baseline` holds controlled snapshots of
 the original Qt UI, domain services, inference worker, configs, and bundled fonts.
 `SOURCE_SNAPSHOT.json` and `BASELINE_GUI_SOURCE_INTEGRITY.json` in the diagnostics

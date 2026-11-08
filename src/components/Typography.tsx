@@ -1,41 +1,93 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import type { Api, Dialogue, FontEntry, TypographyRender } from '../api';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { AlignCenter, AlignLeft, AlignRight, ArrowDownUp, Bold, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Italic, LocateFixed, MoveHorizontal, MoveVertical, Pipette, RotateCw, Scaling, Type } from 'lucide-react';
+import type { Api, Dialogue, DialogueStyle, FontEntry, LayerPatch, TypographyRender } from '../api';
 import { FontBrowser } from './FontBrowser';
 import type { Point } from '../ui/viewport';
-import { cardDialogue, fontSizePatch, type TypographySession } from '../ui/typography';
+import { cardDialogue, fontSizePatch, readSizePresets, type TypographySession } from '../ui/typography';
 import { TextRegionOverlay } from './TextRegionOverlay';
 
 export function TypographyOverlay(props: {
-  session: TypographySession; dialogues: Dialogue[]; selected: string | null; visible: boolean;
+  session: TypographySession; dialogues: Dialogue[]; selected: string | null; visible: boolean; coverText?: boolean;
   scale: number; offset: Point; width: number; height: number; imageWidth: number; imageHeight: number;
   enabled: boolean; showSelection: boolean; onSelect: (id: string) => void; onEdit: (id: string) => void;
   onGesture: (active: boolean) => void; onPointer: (point: Point) => void; onWheel: (event: WheelEvent) => void;
 }) {
   const live = useSyncExternalStore(props.session.subscribe, props.session.getSnapshot);
+  const [editor, setEditor] = useState<{ id: string; text: string } | null>(null);
+  const editing = editor && editor.id === props.selected && props.dialogues.find(text => text.id === editor.id && !text.locked);
+  const cancelled = useRef(false);
+  const finish = (text: string) => {
+    if (editor && editing && !cancelled.current && text !== editor.text) {
+      props.session.edit(editor.id, { text });
+      void props.session.flush().catch(() => {});
+    }
+    setEditor(null);
+  };
   if (!props.visible) return null;
-  const regions = props.dialogues.map(saved => live.drafts[saved.id] ?? saved).filter(text => text.visible).map(text => ({ id: text.id, text: text.text, rect: [Math.floor(text.x), Math.floor(text.y), Math.ceil(text.width), Math.ceil(text.height)] }));
-  return <TextRegionOverlay typography regions={regions} images={live.layers} selected={props.selected} scale={props.scale} offset={props.offset} width={props.width} height={props.height} imageWidth={props.imageWidth} imageHeight={props.imageHeight} enabled={props.enabled} showSelection={props.showSelection} controller={props.session.interaction} onSelect={props.onSelect} onEdit={text => props.onEdit(text.id)} onCommit={(id, rect) => props.session.pose(id, rect)} onGesture={props.onGesture} onPointer={props.onPointer} onWheel={props.onWheel} />;
+  const regions = props.dialogues.map(saved => live.drafts[saved.id] ?? saved).filter(text => text.visible).map(text => ({ id: text.id, text: text.text, locked: text.locked, bubbleBound: Boolean(text.bubble_id), rect: [Math.floor(text.x), Math.floor(text.y), Math.ceil(text.width), Math.ceil(text.height)] }));
+  const editWidth = editing ? Math.min(props.width, Math.max(180, editing.width * props.scale)) : 0;
+  const editHeight = editing ? Math.min(props.height, Math.max(72, Math.min(200, editing.height * props.scale))) : 0;
+  return <>
+    <TextRegionOverlay typography regions={regions} images={live.layers} showCovers={props.coverText} selected={props.selected} scale={props.scale} offset={props.offset} width={props.width} height={props.height} imageWidth={props.imageWidth} imageHeight={props.imageHeight} enabled={props.enabled && !editing} showSelection={props.showSelection && !editing} controller={props.session.interaction} onSelect={props.onSelect} onEdit={text => {
+      props.onEdit(text.id);
+      cancelled.current = false;
+      setEditor({ id: text.id, text: text.text });
+    }} onCommit={(id, rect) => props.session.pose(id, rect)} onGesture={props.onGesture} onPointer={props.onPointer} onWheel={props.onWheel} />
+    {editor && editing && <textarea key={editor.id} className="canvas-dialogue-editor" aria-label="Edit dialogue on canvas" title="Ctrl+Enter to apply · Escape to cancel" autoFocus defaultValue={editor.text} maxLength={4000} style={{
+      left: Math.max(0, Math.min(props.width - editWidth, props.offset.x + editing.x * props.scale)),
+      top: Math.max(0, Math.min(props.height - editHeight, props.offset.y + editing.y * props.scale)),
+      width: editWidth, height: editHeight,
+    }} onBlur={event => finish(event.currentTarget.value)} onKeyDown={event => {
+      if (event.nativeEvent.isComposing) return;
+      if (event.key === 'Escape' || (event.key === 'Enter' && (event.ctrlKey || event.metaKey))) {
+        event.preventDefault(); event.stopPropagation(); cancelled.current = event.key === 'Escape'; event.currentTarget.blur();
+      }
+    }} />}
+  </>;
 }
 
-function NativeNumber({ label, value, min, max, disabled, onValue, onCommit, integer = true }: { label: string; value: number; min: number; max: number; disabled: boolean; onValue: (value: number) => void; onCommit: () => void; integer?: boolean }) {
+function NativeNumber({ label, value, min, max, disabled, onValue, onCommit, integer = true, icon }: { label: string; value: number; min: number; max: number; disabled: boolean; onValue: (value: number) => void; onCommit: () => void; integer?: boolean; icon?: ReactNode }) {
   const [draft, setDraft] = useState(String(value));
   const focused = useRef(false);
   const valid = draft.trim() !== '' && Number.isFinite(Number(draft)) && (!integer || Number.isInteger(Number(draft))) && Number(draft) >= min && Number(draft) <= max;
   useEffect(() => { if (!focused.current) setDraft(String(value)); }, [value]);
-  return <label>{label}<input aria-label={label} type="number" min={min} max={max} step={integer ? 1 : 'any'} value={draft} disabled={disabled} aria-invalid={!valid} onFocus={() => { focused.current = true; }} onChange={event => { const raw = event.target.value; setDraft(raw); const number = Number(raw); if (raw.trim() && Number.isFinite(number) && (!integer || Number.isInteger(number)) && number >= min && number <= max) onValue(number); }} onBlur={() => { focused.current = false; if (!valid) setDraft(String(value)); onCommit(); }} /></label>;
+  return <label className={icon ? 'type-number' : undefined} title={icon ? label : undefined}>
+    {icon ? <span aria-hidden="true">{icon}</span> : label}
+    <input aria-label={label} type="number" min={min} max={max} step={integer ? 1 : 'any'} value={draft} disabled={disabled} aria-invalid={!valid} onFocus={() => { focused.current = true; }} onChange={event => { const raw = event.target.value; setDraft(raw); const number = Number(raw); if (raw.trim() && Number.isFinite(number) && (!integer || Number.isInteger(number)) && number >= min && number <= max) onValue(number); }} onBlur={() => { focused.current = false; if (!valid) setDraft(String(value)); onCommit(); }} />
+  </label>;
 }
 
-function TextColor({ value, disabled, onValue, onCommit }: { value: string; disabled: boolean; onValue: (value: string) => void; onCommit: () => void }) {
+function TextColor({ value, disabled, onValue, onCommit, label = 'Text color' }: { value: string; disabled: boolean; onValue: (value: string) => void; onCommit: () => void; label?: string }) {
   const [draft, setDraft] = useState(value);
+  const [picking, setPicking] = useState(false);
+  const [pickError, setPickError] = useState('');
+  const Picker = typeof window === 'undefined' ? undefined : (window as Window & { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
   useEffect(() => setDraft(value), [value]);
   const valid = /^#[0-9a-f]{6}$/i.test(draft);
-  return <label>Text color<div className="control-pair"><input aria-label="Typography text color" type="color" value={value} disabled={disabled} onChange={event => onValue(event.target.value)} onBlur={onCommit} /><input aria-label="Typography color hex" value={draft} maxLength={7} disabled={disabled} aria-invalid={!valid} onChange={event => { const next = event.target.value; setDraft(next); if (/^#[0-9a-f]{6}$/i.test(next)) onValue(next); }} onBlur={() => { if (!valid) setDraft(value); onCommit(); }} /></div></label>;
+  return <div className="type-color" role="group" aria-label={label}><span>{label}</span><div className="type-color-controls">
+    <input aria-label={`Typography ${label.toLowerCase()}`} title={label} type="color" value={value} disabled={disabled} onChange={event => onValue(event.target.value)} onBlur={onCommit} />
+    <input aria-label={`${label} hex`} title={`${label} hex`} value={draft} maxLength={7} disabled={disabled} aria-invalid={!valid} onChange={event => { const next = event.target.value; setDraft(next); if (/^#[0-9a-f]{6}$/i.test(next)) onValue(next); }} onBlur={() => { if (!valid) setDraft(value); onCommit(); }} />
+    <button type="button" aria-label={`Pick ${label.toLowerCase()} from screen`} disabled={disabled || picking || !Picker} title={Picker?`Sample ${label.toLowerCase()} from screen (Esc to cancel)`:'Screen eyedropper is unavailable in this WebView'} onClick={async()=>{
+    if(!Picker||picking)return;setPicking(true);setPickError('');
+    try { const result=await new Picker().open();if(!/^#[0-9a-f]{6}$/i.test(result.sRGBHex))throw new Error('The screen picker returned an invalid color.');onValue(result.sRGBHex);onCommit(); }
+    catch(error) { if((error as {name?:string})?.name!=='AbortError')setPickError(error instanceof Error?error.message:'Screen color sampling failed.'); }
+    finally { setPicking(false); }
+  }}><Pipette size={14} aria-hidden="true" /></button></div>
+    {(picking || pickError) && <span className="warning-note" role="status">{picking ? 'Pick a screen pixel…' : pickError}</span>}
+  </div>;
 }
 
-export function TypographyControls({ api, session, selected, disabled, onDelete, sourceControls }: { api: Api | null; session: TypographySession; selected: Dialogue | null; disabled: boolean; onCreate: () => void; onDelete: (id: string) => void; sourceControls: React.ReactNode }) {
+const sizePresetsKey = 'yuchi-tauri-font-size-presets';
+
+export function TypographyControls({ api, session, selected, disabled: unavailable, onDelete, sourceControls, sourceOptions }: { api: Api | null; session: TypographySession; selected: Dialogue | null; disabled: boolean; onCreate: () => void; onDelete: (id: string) => void; sourceControls: React.ReactNode; sourceOptions?: React.ReactNode }) {
   const live = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const [fonts, setFonts] = useState<FontEntry[]>([]);
   const [fontError, setFontError] = useState('');
+  const [caseNotice, setCaseNotice] = useState('');
+  const [sizePresets, setSizePresets] = useState(() => readSizePresets(globalThis.localStorage?.getItem(sizePresetsKey) ?? null));
+  const caseAction = useRef(0);
+  const caseTarget = useRef(selected?.id); caseTarget.current = selected?.id;
+  useEffect(() => { caseAction.current++; setCaseNotice(''); }, [selected?.id]);
   useEffect(() => {
     setFonts([]); setFontError('');
     if (!api) return;
@@ -51,36 +103,130 @@ export function TypographyControls({ api, session, selected, disabled, onDelete,
     return () => { stale = true; unsubscribe(); };
   }, [api]);
   const text = selected ? live.drafts[selected.id] ?? selected : null;
+  const disabled = unavailable || Boolean(text?.locked);
+  const style = text?.style ?? {};
   const commit = () => { void session.flush().catch(() => {}); };
-  const change = (patch: Partial<Dialogue>, immediate = false) => { if (text) { session.edit(text.id, patch); if (immediate) commit(); } };
+  const change = (patch: Partial<Dialogue>, immediate = false) => { if (text) { setCaseNotice(''); session.edit(text.id, patch); if (immediate) commit(); } };
+  const changeStyle = (patch: DialogueStyle, immediate = false) => {
+    if (!text) return;
+    const current = session.getSnapshot().drafts[text.id] ?? text;
+    change({ style: { ...current.style, ...patch } }, immediate);
+  };
   const bumpSize=(delta:number)=>{if(!text)return;const current=session.getSnapshot().drafts[text.id] ?? text;session.edit(text.id,fontSizePatch(current,current.size+delta));commit();};
-  const supportsBold=Boolean(text && fonts.find(font=>font.family===text.family)?.weights.includes(700));
+  const currentFont = fonts.find(font => font.family === text?.family);
+  const supportsBold = Boolean((style.italic ? currentFont?.italicWeights : currentFont?.weights)?.includes(700));
   const layer = text ? live.layers[text.id] : null;
-  return <div className="typography-properties" data-typography-inspector="true"><h3>Indonesian dialogue / Typography</h3>
+  const fitText = (preset?: 'manga') => {
+    if (!text) return;
+    const id = text.id;
+    setCaseNotice('Checking safe text fit…');
+    void session.fitInsideBubble(id, preset).then(notice => {
+      if (caseTarget.current === id) setCaseNotice(notice ?? '');
+    }).catch(() => {
+      if (caseTarget.current === id) setCaseNotice('Could not fit text. The previous layout was kept.');
+    });
+  };
+  return <div className="typography-properties" data-typography-inspector="true">
+    <details className="property-group" open><summary>Translation</summary><div className="property-fields">
+      {sourceControls}
+      {text && <label>Translation<textarea id="typography-text" aria-label="Typeset dialogue text" maxLength={4000} value={text.text} disabled={disabled} onChange={event => change({ text: event.target.value })} onBlur={commit} /></label>}
+      {sourceOptions}
+    </div></details>
+    <details className="property-group" open><summary>Typography</summary><div className="property-fields">
     {fontError && <p role="alert" className="warning-note">{fontError}</p>}
-    {text ? <div key={text.id} className="typography-fields"><div className="control-pair"><button disabled={disabled} onClick={() => session.copyStyle(text.id)}>Copy Style</button><button disabled={disabled || !live.copiedStyle} onClick={() => { void session.pasteStyle(text.id).catch(() => {}); }}>Paste Style</button></div><label>Indonesian<textarea id="typography-text" aria-label="Typeset dialogue text" maxLength={4000} value={text.text} disabled={disabled} onChange={event => change({ text: event.target.value })} onBlur={commit} /></label>
+    {text ? <div key={text.id} className="typography-fields">
       <FontBrowser fonts={fonts} value={text.family} disabled={disabled} onSelect={family => change({ family }, true)} />
-      <div className="control-pair"><div className="size-stepper"><button type="button" disabled={disabled || text.size<=8} aria-label="Decrease requested font size" title="Decrease requested size; Auto Fit may use a smaller actual size" onClick={()=>bumpSize(-1)}>−</button><NativeNumber label="Font size (native px)" value={text.size} min={8} max={144} disabled={disabled} onValue={size => change(fontSizePatch(text, size))} onCommit={commit} /><button type="button" disabled={disabled || text.size>=144} aria-label="Increase requested font size" title="Increase requested size; Auto Fit may use a smaller actual size" onClick={()=>bumpSize(1)}>+</button></div><label>Weight<select aria-label="Typography weight" value={text.weight} disabled={disabled} onChange={event => change({ weight: Number(event.target.value) }, true)}>{![400, 700].includes(text.weight) && <option value={text.weight}>{text.weight} · requested</option>}<option value={400}>Regular · 400</option><option value={700}>Bold · 700</option></select></label></div>
-      <button type="button" aria-label="Bold text" aria-pressed={text.weight>=600} disabled={disabled || (!supportsBold && text.weight<600)} title={supportsBold ? 'Bold' : 'This family has no available Bold 700 face'} onClick={()=>change({weight:text.weight>=600?400:700},true)}>Bold</button>
-      <div className="control-pair"><label>Alignment<select aria-label="Typography alignment" value={text.alignment} disabled={disabled} onChange={event => change({ alignment: event.target.value as Dialogue['alignment'] }, true)}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label><TextColor value={text.color} disabled={disabled} onValue={color => change({ color })} onCommit={commit} /></div>
-      <label className="layer-control"><input aria-label="Auto Fit to Bubble" type="checkbox" checked={text.auto_fit} disabled={disabled} onChange={event => change({ auto_fit: event.target.checked }, true)} />Auto Fit to Bubble / Box</label>
-      <details><summary>Advanced layout &amp; position</summary><div className="control-pair"><NativeNumber label="Safe padding (native px)" value={text.padding} min={0} max={512} disabled={disabled} onValue={padding => change({ padding })} onCommit={commit} /><NativeNumber label="Minimum font size" value={text.minimum_size} min={8} max={Math.min(48, text.size)} disabled={disabled} onValue={minimum_size => change({ minimum_size })} onCommit={commit} /></div>
+      <div className="type-size-row">
+        <div className="size-stepper">
+          <button type="button" disabled={disabled || text.size<=8} aria-label="Decrease requested font size" title="Decrease requested font size" onClick={()=>bumpSize(-1)}>−</button>
+          <NativeNumber label="Font size (px)" icon={<Type size={13} />} value={text.size} min={8} max={144} disabled={disabled} onValue={size => change(fontSizePatch(text, size))} onCommit={commit} />
+          <button type="button" disabled={disabled || text.size>=144} aria-label="Increase requested font size" title="Increase requested font size" onClick={()=>bumpSize(1)}>+</button>
+        </div>
+        <div className="type-presets" role="group" aria-label="Apply font size preset">{sizePresets.map((size, index) => <button key={index} type="button" disabled={disabled || size === null} aria-label={`Size preset ${index + 1}${size === null ? ', empty' : `, ${size} px`}`} title={size === null ? 'Empty preset · save a size in Advanced' : `Apply ${size} px`} aria-pressed={index === sizePresets.indexOf(text.size)} onClick={() => { if (size !== null) change(fontSizePatch(text, size), true); }}>{index + 1}</button>)}</div>
+      </div>
+      <div className="type-format-row">
+      <div className="type-quick-actions" role="group" aria-label="Dialogue emphasis and letter case">
+      <button type="button" aria-label="Bold text" aria-pressed={text.weight>=600} disabled={disabled || (!supportsBold && text.weight<600)} title={supportsBold ? 'Bold' : 'This family has no available Bold 700 face'} onClick={()=>change({weight:text.weight>=600?400:700},true)}><Bold size={14} aria-hidden="true" /></button>
+      <button type="button" aria-label="Italic text" aria-pressed={Boolean(style.italic)} disabled={disabled} title={fonts.find(font => font.family === text.family)?.italicWeights?.length ? 'Italic' : 'Italic uses a licensed installed face when available'} onClick={() => changeStyle({ italic: !style.italic }, true)}><Italic size={14} aria-hidden="true" /></button>
+      {(['upper','title','lower'] as const).map((mode,index)=><button key={mode} type="button" disabled={disabled} aria-label={`${['Uppercase','Title case','Lowercase'][index]} dialogue`} title={`${['Uppercase','Title case (each word)','Lowercase'][index]}; Auto Fit may lower this dialogue's minimum to 8 px if needed, with an explicit notice`} onClick={()=>{
+        const action=++caseAction.current,id=text.id;setCaseNotice('Checking case fit…');
+        void session.transformCase(id,mode).then(notice=>{if(caseAction.current===action&&caseTarget.current===id)setCaseNotice(notice??'');}).catch(()=>{if(caseAction.current===action&&caseTarget.current===id)setCaseNotice('Case change was not applied.');});
+      }}>{['AA','Aa','aa'][index]}</button>)}</div>
+      <div className="type-quick-actions" role="group" aria-label="Text alignment">
+        {([['left', 'Align left', AlignLeft], ['center', 'Align center', AlignCenter], ['right', 'Align right', AlignRight]] as const).map(([alignment, label, Icon]) =>
+          <button key={alignment} type="button" disabled={disabled} aria-label={label} title={label} aria-pressed={text.alignment === alignment} onClick={() => change({ alignment }, true)}><Icon size={14} aria-hidden="true" /></button>)}
+      </div>
+      </div>
+      {caseNotice&&<p role="status" className="section-note">{caseNotice}</p>}
+      <div className="type-metrics">
+        <NativeNumber label="Line height" icon={<ArrowDownUp size={14} />} value={style.line_height ?? 1} min={.5} max={3} integer={false} disabled={disabled} onValue={line_height => changeStyle({ line_height })} onCommit={commit} />
+        <NativeNumber label="Letter spacing (px)" icon={<MoveHorizontal size={14} />} value={style.letter_spacing ?? 0} min={-4} max={24} integer={false} disabled={disabled} onValue={letter_spacing => changeStyle({ letter_spacing })} onCommit={commit} />
+        <NativeNumber label="Vertical offset (px)" icon={<MoveVertical size={14} />} value={style.vertical_offset ?? 0} min={-200} max={200} integer={false} disabled={disabled} onValue={vertical_offset => changeStyle({ vertical_offset })} onCommit={commit} />
+        <NativeNumber label="Rotation (°)" icon={<RotateCw size={14} />} value={style.rotation ?? 0} min={-180} max={180} integer={false} disabled={disabled} onValue={rotation => changeStyle({ rotation })} onCommit={commit} />
+      </div>
+      <div className="type-quick-actions" role="group" aria-label="Automatic text layout">
+        <button type="button" aria-label="Auto Width" aria-pressed={Boolean(style.auto_width)} disabled={disabled} onClick={()=>changeStyle({auto_width:!style.auto_width},true)} title="Use the text width within the safe area"><MoveHorizontal size={14} aria-hidden="true" /> Auto Width</button>
+        <button type="button" aria-label="Auto Fit to Bubble" title="Fit the text inside the bubble" aria-pressed={text.auto_fit} disabled={disabled} onClick={()=>change({auto_fit:!text.auto_fit},true)}><Scaling size={14} aria-hidden="true" /> Auto Fit</button>
+        <button type="button" title="Apply bold italic manga lettering and fit it inside the bubble" disabled={disabled || !text.text.trim()} onClick={() => fitText('manga')}><Type size={14} aria-hidden="true" /> Manga Style</button>
+      </div>
+      <div className="type-position">
+        <span>Position</span>
+        <div className="type-quick-actions" role="group" aria-label="Nudge dialogue position">
+          {([['Left',-1,0,ChevronLeft],['Up',0,-1,ChevronUp],['Down',0,1,ChevronDown],['Right',1,0,ChevronRight]] as const).map(([label,dx,dy,Icon])=><button key={label} type="button" disabled={disabled} aria-label={`Nudge dialogue ${label.toLowerCase()}`} title={`${label}: 1 native pixel; Shift: 10 pixels`} onClick={event=>{void session.nudge(text.id,dx*(event.shiftKey?10:1),dy*(event.shiftKey?10:1)).catch(()=>{});}}><Icon size={14} aria-hidden="true" /></button>)}
+          <button type="button" disabled={disabled} aria-label={text.bubble_id?'Center in bubble':'Center in page'} title={text.bubble_id?'Center within the linked bubble':'Center within the page'} onClick={()=>{void session.center(text.id).catch(()=>{});}}><LocateFixed size={14} aria-hidden="true" /></button>
+        </div>
+      </div>
+      <div className="type-metrics">
+        <TextColor value={text.color} disabled={disabled} onValue={color => change({ color })} onCommit={commit} />
+        <TextColor label="Stroke color" value={style.stroke_color ?? '#ffffff'} disabled={disabled} onValue={stroke_color => changeStyle({ stroke_color })} onCommit={commit} />
+      </div>
+      {layer?.overflow && <button className="studio-action" disabled={disabled} onClick={() => fitText()}>Fit text safely</button>}
+      <details><summary>Advanced typography</summary>
+        <div className="control-pair"><label>Weight<select aria-label="Typography weight" value={text.weight} disabled={disabled} onChange={event => change({ weight: Number(event.target.value) }, true)}>{![400, 700].includes(text.weight) && <option value={text.weight}>{text.weight} · requested</option>}<option value={400}>Regular · 400</option><option value={700}>Bold · 700</option></select></label>
+        <NativeNumber label="Stroke width (px)" value={style.stroke_width ?? 0} min={0} max={12} disabled={disabled} onValue={stroke_width => changeStyle({ stroke_width })} onCommit={commit} /></div>
+        <label>Save requested size ({text.size} px) to slot<select value="" disabled={disabled} onChange={event => {
+          const slot = event.target.value;
+          if (slot === '') return;
+          const next = sizePresets.map((size, index) => index === Number(slot) ? text.size : size);
+          localStorage.setItem(sizePresetsKey, JSON.stringify(next)); setSizePresets(next);
+        }}><option value="" disabled>Choose a slot</option>{sizePresets.map((size, index) => <option key={index} value={index}>Preset {index + 1}{size === null ? '' : ` · replace ${size} px`}</option>)}</select></label>
+      <div className="control-pair"><button disabled={disabled} onClick={() => session.copyStyle(text.id)}>Copy Style</button><button disabled={disabled || !live.copiedStyle} onClick={() => { void session.pasteStyle(text.id).catch(() => {}); }}>Paste Style</button></div>
+      <div className="control-pair"><NativeNumber label="Safe padding (native px)" value={text.padding} min={0} max={512} disabled={disabled} onValue={padding => change({ padding })} onCommit={commit} /><NativeNumber label="Minimum font size" value={text.minimum_size} min={8} max={Math.min(48, text.size)} disabled={disabled} onValue={minimum_size => change({ minimum_size })} onCommit={commit} /></div>
       <div className="control-pair"><NativeNumber integer={false} label="Dialogue X" value={text.x} min={0} max={20000} disabled={disabled} onValue={x => change({ x })} onCommit={commit} /><NativeNumber integer={false} label="Dialogue Y" value={text.y} min={0} max={2000000} disabled={disabled} onValue={y => change({ y })} onCommit={commit} /></div>
       <div className="control-pair"><NativeNumber integer={false} label="Dialogue width" value={text.width} min={1} max={20000} disabled={disabled} onValue={width => change({ width })} onCommit={commit} /><NativeNumber integer={false} label="Dialogue height" value={text.height} min={1} max={2000000} disabled={disabled} onValue={height => change({ height })} onCommit={commit} /></div>
       {text.bubble_id && <button disabled={disabled} onClick={() => change({ bubble_id: null }, true)}>Detach bubble constraint</button>}
       </details>{live.loading[text.id] && <p role="status">Rendering text…</p>}
-      {layer && <p className="section-note">Actual: {layer.resolvedFamily} · {layer.resolvedWeight} · {layer.effectiveSize} native px</p>}
+      {layer && <p className="section-note">Actual: {layer.resolvedFamily} {layer.resolvedItalic ? 'Italic' : ''} · {layer.resolvedWeight} · {layer.effectiveSize} native px{style.auto_width && layer.layoutWidth !== undefined ? ` · width ${layer.layoutWidth} px` : ''}</p>}
+      {text.locked && <p className="section-note">Unlock this dialogue in Layers to edit it.</p>}
       {layer?.warnings.map((warning, index) => <p key={index} className="warning-note" role="status">{warning}</p>)}
       {live.errors[text.id] && <p role="alert" className="warning-note">{live.errors[text.id]}</p>}
       <button className="studio-action" disabled={disabled} onClick={() => onDelete(text.id)}>Delete text layer</button>
-    </div> : <p className="section-note">Select a dialogue on Editing Canvas, or draw a box with T. Double-click a dialogue to edit its text here.</p>}
-    {sourceControls}
+    </div> : <p className="section-note">Select a dialogue on Editing Canvas, or draw a box with T. Double-click a dialogue to edit it on the canvas.</p>}
+    </div></details>
   </div>;
 }
 
-export function TypographyLayerList({ session, dialogues, selected, onSelect }: { session: TypographySession; dialogues: Dialogue[]; selected: string | null; onSelect: (id: string) => void }) {
+export function TypographyLayerList({ session, dialogues, selected, onSelect, onLayer, disabled }: { session: TypographySession; dialogues: Dialogue[]; selected: string | null; onSelect: (id: string) => void; onLayer?: (id: string, patch: LayerPatch) => void; disabled?: boolean }) {
   const live = useSyncExternalStore(session.subscribe, session.getSnapshot);
-  return <div className="typography-layer-list">{dialogues.map((saved, index) => { const text = live.drafts[saved.id] ?? saved; return <div key={text.id} className={selected === text.id ? 'selected' : ''}><input type="checkbox" aria-label={`Dialogue ${index+1} export visibility`} checked={text.visible} onChange={event => { session.edit(text.id, { visible: event.target.checked }); void session.flush().catch(() => {}); }} /><button onClick={() => onSelect(text.id)}>Dialogue {String(index+1).padStart(2, '0')} · {text.text || 'empty text'}</button></div>; })}</div>;
+  const ordered = onLayer ? [...dialogues].reverse() : dialogues;
+  return <div className="typography-layer-list">{ordered.map((saved, row) => {
+    const text = live.drafts[saved.id] ?? saved;
+    const index = onLayer ? dialogues.length - 1 - row : row;
+    const label = `Dialogue ${index + 1}`;
+    return <div key={text.id} className={selected === text.id ? 'selected' : ''}>
+      <input type="checkbox" aria-label={`${label} export visibility`} checked={text.visible} disabled={disabled || (!onLayer && text.locked)} onChange={event => {
+        const visible = event.target.checked;
+        if (onLayer) onLayer(text.id, { visible });
+        else { session.edit(text.id, { visible }); void session.flush().catch(() => {}); }
+      }} />
+      <button onClick={() => onSelect(text.id)}>{label} · {text.text || 'empty text'}</button>
+      {onLayer && <div className="layer-order-actions">
+        <button aria-label={`${text.locked ? 'Unlock' : 'Lock'} ${label}`} aria-pressed={Boolean(text.locked)} disabled={disabled} onClick={() => onLayer(text.id, { locked: !text.locked })}>{text.locked ? 'Unlock' : 'Lock'}</button>
+        <button aria-label={`Bring ${label} forward`} disabled={disabled || text.locked || row === 0} onClick={() => onLayer(text.id, { move: 'up' })}>↑</button>
+        <button aria-label={`Send ${label} backward`} disabled={disabled || text.locked || row === ordered.length - 1} onClick={() => onLayer(text.id, { move: 'down' })}>↓</button>
+      </div>}
+    </div>;
+  })}</div>;
 }
 
 export function TypographyExportNotice({ session, count }: { session: TypographySession; count: number }) {

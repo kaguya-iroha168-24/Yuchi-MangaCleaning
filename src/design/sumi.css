@@ -58,6 +58,25 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .selection-properties .control-pair {min-width:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
 .selection-properties input {min-width:0;max-width:100%}
 .selection-properties .typography-layer-list button {overflow-wrap:anywhere;max-width:100%}
+.canvas-dialogue-editor {position:absolute;pointer-events:auto;z-index:3;resize:none;padding:8px;background:var(--sumi-panel);color:var(--washi-primary);outline:2px solid var(--coral-selected)}
+.property-group {margin:8px 0;border:1px solid var(--sumi-border);border-radius:6px;background:var(--sumi-panel)}
+.property-group>summary {padding:8px;background:var(--sumi-raised);font-weight:650;cursor:pointer}
+.property-fields {padding:6px 8px}
+.property-fields>label:first-child {margin-top:0}
+.property-fields textarea {min-height:50px}
+.canvas-column {position:relative}
+.operation-overlay {position:absolute;inset:0;z-index:12;display:grid;place-items:center;background:#12171c91;pointer-events:none}
+.operation-card {display:grid;justify-items:center;gap:12px;width:min(340px,90%);padding:16px;border-radius:8px;background:var(--sumi-panel);border:1px solid var(--sumi-border);pointer-events:auto}
+.operation-card p {margin:0;text-align:center}
+.operation-card progress {width:100%;height:6px;accent-color:var(--jade-primary)}
+.operation-card button {padding:4px 16px}
+.preferences-dialog .preferences-layout {display:flex;flex-direction:column}
+.preferences-dialog .preferences-layout>nav {display:flex;flex-wrap:wrap;gap:4px;padding:8px;border-bottom:1px solid var(--sumi-border);border-inline-end:0}
+.preferences-dialog .preferences-layout>nav button {width:auto}
+.preferences-dialog .preferences-layout>nav b {display:none}
+.gemini-settings-grid {display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.gemini-settings-grid input {min-width:0;width:100%}
+.settings-actions {display:flex;flex-wrap:wrap;gap:6px}
 .review-actions {display:flex;flex-wrap:wrap;align-items:center;gap:4px}
 .review-label,.warning-note {color:var(--amber-review)}
 details {margin:12px 0} summary {cursor:pointer;color:var(--text-secondary);padding:8px 0}
@@ -68,6 +87,12 @@ details {margin:12px 0} summary {cursor:pointer;color:var(--text-secondary);padd
 .preferences-layout nav button[aria-current=page] {color:var(--jade-primary);background:var(--sumi-raised)}
 .preferences-content {min-width:0}
 .text-region-box.is-selected {border-color:var(--coral-selected);box-shadow:0 0 0 1px #12171C}
+.dock-tabs [aria-selected='true'] {border-bottom-color:var(--coral-selected);color:var(--washi-primary)}
+.dock-tabs button {min-width:0;flex:1}
+.typography-layer-list>div:has(.layer-order-actions) {display:grid;grid-template-columns:auto minmax(0,1fr)}
+.layer-order-actions {grid-column:2;display:flex;gap:3px}
+.typography-cover {position:absolute;display:block;pointer-events:none;user-select:none}
+.layer-control select {width:100%;min-width:0}
 .text-region-handle {width:24px;height:24px;background:transparent!important;border:0!important;box-shadow:none!important}
 .text-region-handle:after {content:'';position:absolute;inset:7px;background:var(--coral-selected);border:1px solid #12171C}
 .candidate-region-box {border:1.5px solid var(--mist-candidate);box-shadow:0 0 0 1px #12171C;background:#81B9D00D}

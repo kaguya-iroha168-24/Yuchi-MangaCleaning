@@ -35,6 +35,29 @@ class AutomaticQueue(unittest.TestCase):
         return main.store.job['result']
     def batch(self,*args,**kwargs):return SimpleNamespace(bubbles=[deepcopy(self.bubble)],metadata={})
 
+    def test_prepare_detects_and_cleans_without_local_ocr(self):
+        self.pages(1)
+        with patch.object(main, 'detect_with_fallback', side_effect=self.batch), patch.object(main, 'recognize') as ocr:
+            response = self.post('/v1/process', {'provider': 'opencv', 'skip_ocr': True})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(self.wait()['cleanedRegions'], 1)
+            ocr.assert_not_called()
+        doc = main.store.document
+        bubble, = doc.bubbles
+        region, = doc.region_graph.text_regions
+        self.assertEqual(region.bubble_id, bubble.id)
+        changed = np.any(doc.working != self.source, axis=2)
+        self.assertTrue(changed.any())
+        x, y, w, h = bubble.rect
+        allowed = np.zeros_like(changed)
+        applied = bubble.last_applied_mask
+        if applied.shape == changed.shape:
+            allowed = applied != 0
+        else:
+            allowed[y:y+h, x:x+w] = applied != 0
+        self.assertFalse(np.any(changed & ~allowed))
+        np.testing.assert_array_equal(doc.source, self.source)
+
     def test_twenty_pages_process_once_without_approval_and_reuse_results(self):
         pages=self.pages(20)
         with patch.object(main,'detect_with_fallback',side_effect=self.batch) as detector,patch.object(main,'recognize',return_value=dict(text='HI',provider='controlled',model_id='fixture')) as ocr:
@@ -83,6 +106,21 @@ class AutomaticQueue(unittest.TestCase):
         self.assertEqual(main.store.job['status'],'cancelled')
         np.testing.assert_array_equal(main.store.document.working,self.source)
         self.assertIsNone(main.store.preview)
+
+    def test_overlay_uses_same_detection_and_ocr_and_can_switch_back_to_clean(self):
+        self.pages(1)
+        with patch.object(main,'detect_with_fallback',side_effect=self.batch) as detect, patch.object(main,'recognize',return_value=dict(text='HI',provider='controlled',model_id='fixture')) as ocr:
+            response=self.post('/v1/process',{'provider':'opencv','device':'cpu','output_mode':'overlay'})
+            self.assertEqual(response.status_code,200,response.text)
+            result=self.wait()
+            self.assertEqual((detect.call_count,ocr.call_count,result['cleanedRegions']),(1,1,0))
+            self.assertEqual(main.store.document.composition,{'text_mode':'overlay'})
+            np.testing.assert_array_equal(main.store.document.working,self.source)
+            self.post('/v1/process',{'provider':'opencv','device':'cpu','output_mode':'clean'})
+            result=self.wait()
+            self.assertEqual((detect.call_count,ocr.call_count,result['cleanedRegions']),(1,1,1))
+            self.assertEqual(main.store.document.composition,{})
+            self.assertTrue(np.any(main.store.document.working!=self.source))
 
 
 if __name__=='__main__':unittest.main()

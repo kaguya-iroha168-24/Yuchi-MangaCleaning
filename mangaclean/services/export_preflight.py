@@ -19,7 +19,7 @@ def dialogue_export_issues(doc):
         layer = None
         code = reason = None
         try:
-            layer = render_dialogue(text, doc.bubbles)
+            layer = render_dialogue(text, doc.bubbles, overlay=True) if doc.composition.get('text_mode') == 'overlay' else render_dialogue(text, doc.bubbles)
             if layer['overflow']:
                 code, reason = 'overflow', 'Teks tidak muat pada area aman. Perbesar box atau perbaiki ukuran/padding/baris.'
             elif any('Some glyphs are missing' in message for message in layer['warnings']):

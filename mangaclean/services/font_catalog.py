@@ -9,6 +9,7 @@ USER = Path(os.environ.get('LOCALAPPDATA', ''))/'Microsoft/Windows/Fonts'
 APP = Path(__file__).resolve().parents[2]/'resources/fonts'
 REQUESTED = {
     'Komika Text Tight': ('KOMTXTT.ttf', 'MIMPIKU MALAM ITU', 'Local file; verify usage rights; no bundled fonts'),
+    'Komika Text Kaps': ('KOMTXTK.ttf', 'SEPULUH MENIT KEMUDIAN', 'Installed font; no bundled files'),
     'Architects Daughter': ('ArchitectsDaughter-Regular.ttf', 'Mimpiku malam itu', 'SIL OFL 1.1'),
     'Shadows Into Light': ('ShadowsIntoLight-Regular.ttf', 'A little different...', 'SIL OFL 1.1'),
     'CCMeanwhile': ('ccmeanwhile-regular.ttf', 'WHAT HAPPENED?!', 'Local file; user license required; no redistribution'),
@@ -20,10 +21,13 @@ REQUESTED = {
 @lru_cache(maxsize=1)
 def requested_faces():
     families = {family: {} for family in REQUESTED}
+    italics = {family: {} for family in REQUESTED}
     assets = {}
     candidates = []
     for filename, _, _ in REQUESTED.values():
         candidates.extend(root/filename for root in (SYSTEM, USER))
+    candidates.extend(root/filename for root in (SYSTEM, USER)
+                      for filename in ('KOMTXTKB.ttf', 'KOMTXTKI.ttf', 'KOMTXKBI.ttf'))
     if APP.is_dir():
         candidates.extend(p for p in sorted(APP.iterdir())[:256] if p.suffix.lower() in ('.ttf','.otf','.ttc'))
     for path in dict.fromkeys(candidates):
@@ -37,17 +41,17 @@ def requested_faces():
                     family = font['name'].getDebugName(16) or font['name'].getDebugName(1)
                     if family not in families: continue
                     style = font['name'].getDebugName(17) or font['name'].getDebugName(2) or ''
-                    if 'italic' in style.lower() or font['OS/2'].fsSelection & 1: continue
+                    italic = 'italic' in style.lower() or bool(font['OS/2'].fsSelection & 1)
                     axes = [(axis.axisTag, axis.defaultValue, axis.minValue, axis.maxValue) for axis in font['fvar'].axes] if 'fvar' in font else []
                     weight_axis = next((a for a in axes if a[0]=='wght'), None)
                     weights = [w for w in (300,400,500,600,700) if weight_axis[2]<=w<=weight_axis[3]] if weight_axis else [font['OS/2'].usWeightClass]
                     for weight in weights:
                         key = f'{path}|{index}|{weight}'
                         assets[key] = dict(path=path, index=index, axes=[weight if tag=='wght' else default for tag,default,_,_ in axes])
-                        families[family].setdefault(weight, key)
+                        (italics if italic else families)[family].setdefault(weight, key)
         except (OSError, ValueError, KeyError, TTLibError):
             continue
-    return families, assets
+    return families, assets, italics
 
 
 def face(name):

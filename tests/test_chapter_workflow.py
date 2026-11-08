@@ -1,11 +1,15 @@
 from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from zipfile import ZipFile
+from unittest.mock import patch
 import json
 import unittest
 import cv2
 import numpy as np
 from fastapi.testclient import TestClient
 from backend import main
+from mangaclean.services import chapter as chapter_io
 
 class ChapterWorkflow(unittest.TestCase):
     def setUp(self):
@@ -57,6 +61,37 @@ class ChapterWorkflow(unittest.TestCase):
         response=self.client.post('/v1/pages/import?append=true',headers=self.headers,files=[('files',('page_1.png',BytesIO(png.tobytes()),'image/png'))])
         self.assertEqual(response.status_code,200,response.text)
         ids=[p['id'] for p in response.json()['chapter']['pages']];self.assertEqual(len(ids),11);self.assertEqual(len(set(ids)),11)
+
+    def test_append_identical_image_keeps_old_page_id_and_rolls_back_invalid_batch(self):
+        [first] = self.import_pages(1)
+        _, png = cv2.imencode('.png', main.store.document.source)
+        def append(*items):
+            return self.client.post('/v1/pages/import?append=true', headers=self.headers,
+                files=[('files', (name, payload, 'image/png')) for name, payload in items])
+        invalid = append(('page_1.png', png.tobytes()), ('page_2.png', b'bad data'))
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual([row['id'] for row in main.store.chapter.pages], [first['id']])
+        valid = append(('page_1.png', png.tobytes()))
+        self.assertEqual(valid.status_code, 200, valid.text)
+        ids = [row['id'] for row in valid.json()['chapter']['pages']]
+        self.assertEqual(ids[0], first['id'])
+        self.assertEqual(len(set(ids)), 2)
+        self.assertEqual(main.store.document.region_graph.page_id, first['id'])
+
+    def test_reopen_reuses_verified_page_bytes_without_reencoding(self):
+        self.import_pages(2)
+        main.store.document.composition = {'text_mode':'overlay'}
+        main.store.document.revision += 1
+        with TemporaryDirectory(dir=main.CACHE) as folder:
+            path = Path(folder) / 'saved.mangaclean'
+            main.store.chapter.save(main.store,path)
+            with patch.object(chapter_io,'save_project',side_effect=AssertionError('Unnecessary chapter reencode')):
+                loaded = chapter_io.Chapter.load(path,folder,main.Document)
+            with ZipFile(path) as archive:
+                manifest = json.loads(archive.read('manifest.json'))
+                for row in manifest['pages']:
+                    self.assertEqual((loaded.folder/(row['id']+'.mangaclean')).read_bytes(),archive.read(row['entry']))
+            self.assertEqual(loaded.decode(loaded.initial_active).composition, {'text_mode':'overlay'})
 
     def test_twenty_pages_and_linked_dialogue_history_remain_page_local(self):
         pages=self.import_pages(20)

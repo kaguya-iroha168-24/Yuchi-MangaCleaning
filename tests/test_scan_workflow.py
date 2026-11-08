@@ -17,10 +17,43 @@ class ScanWorkflow(unittest.TestCase):
         self.client.post('/v1/open?discard=true',headers=self.headers,files={'file':('owned.png',BytesIO(png.tobytes()),'image/png')})
 
     def post(self,path,body=None):return self.client.post(path,headers=self.headers,json=body or {})
-    def wait(self):
-        deadline=time.monotonic()+5
+    def wait(self, timeout=5):
+        deadline=time.monotonic()+timeout
         while main.store.job['status'] in {'queued','running'} and time.monotonic()<deadline:time.sleep(.01)
         self.assertEqual(main.store.job['status'],'done',main.store.job)
+
+    def test_detect_only_supports_current_and_all_14_pages_without_ocr_or_cleaning(self):
+        from mangaclean.services.chapter import Chapter
+        from mangaclean.core.region_graph import RegionGraph
+        from tempfile import TemporaryDirectory
+        image=np.full((80,100,3),255,np.uint8)
+        with TemporaryDirectory(dir=main.CACHE) as directory:
+            chapter=Chapter(directory,main.Document)
+            for i in range(14):
+                name=f'{i+1:02}.png'
+                chapter.add(main.Document(image,image.copy(),name,np.zeros(image.shape[:2],np.uint8),region_graph=RegionGraph.for_legacy(image,name)))
+            ids=[row['id'] for row in chapter.pages]
+            chapter.activate(main.store,ids[0],flush=False);main.store.chapter=chapter
+            mask=np.full((30,30),255,np.uint8)
+            def detection(*args):
+                return SimpleNamespace(bubbles=[Bubble((10,10,30,30),mask.copy(),mask.copy())],metadata={})
+            with patch.object(main,'detect_with_fallback',side_effect=detection) as detect, patch.object(main,'recognize') as ocr:
+                payload={'provider':'opencv','device':'cpu','detect_only':True}
+                first=self.post('/v1/scan-detect',payload)
+                self.assertEqual(first.status_code,200,first.text);self.wait()
+                self.assertEqual(first.json()['type'],'detect-bubbles')
+                self.assertEqual(detect.call_count,1)
+                batch=self.post('/v1/scan-detect',{**payload,'ids':ids})
+                self.assertEqual(batch.status_code,200,batch.text);self.wait(30)
+                result=main.store.job['result']
+                self.assertEqual((result['processedPages'],result['detectedPages'],result['reusedPages'],result['cleanedRegions']),(14,13,1,0))
+                self.assertEqual(detect.call_count,14);ocr.assert_not_called()
+                self.assertEqual(chapter.active,ids[0])
+                for page in ids:
+                    doc=chapter.decode(page)
+                    self.assertEqual((len(doc.bubbles),len(doc.region_graph.text_regions)),(1,1))
+                    np.testing.assert_array_equal(doc.working,doc.source)
+            main.store.chapter=None
 
     def test_second_scan_reuses_ids_and_ocr_and_never_cleans(self):
         mask=np.full((30,30),255,np.uint8)

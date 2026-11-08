@@ -1,9 +1,12 @@
 """Chapter routes around the established single-page editor and codecs."""
 from pathlib import Path
+from contextlib import nullcontext
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from uuid import uuid4
 from hashlib import sha256
 import json
+import os
 import re
 from fastapi import HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
@@ -60,8 +63,9 @@ def register(namespace):
             with store.lock:
                 m.check_idle()
                 if identity!=(id(store.document),store.document.revision if store.document else 0):raise HTTPException(409,'The current page changed during import. Retry.')
-                chapter=getattr(store,'chapter',None) if append else None
-                if chapter is None:
+                existing=getattr(store,'chapter',None) if append else None
+                chapter=existing
+                if not chapter:
                     chapter=Chapter(m.CACHE,m.Document)
                     if append and store.document:
                         chapter.active=chapter.add(store.document)
@@ -69,18 +73,27 @@ def register(namespace):
                 if len(chapter.pages)+len(paths)>200:raise HTTPException(422,'Chapter supports at most 200 pages.')
                 # Validate every input before changing the live chapter. Decoded
                 # images are released on each iteration, not retained as a list.
-                staged=Chapter(m.CACHE,m.Document)
-                for name,path in paths:
-                    source=m.read_image(path)
-                    doc=m.Document(source,source.copy(),name,m.np.zeros(source.shape[:2],m.np.uint8),region_graph=m.RegionGraph.for_legacy(source,name),dirty=True)
-                    staged.add(doc)
-                import shutil
-                for page in staged.pages:
-                    shutil.copyfile(staged.folder/(page['id']+'.mangaclean'),chapter.folder/(page['id']+'.mangaclean'))
-                    chapter.pages.append(page)
-                old_active=chapter.active
+                with (TemporaryDirectory(dir=m.CACHE) if existing else nullcontext(m.CACHE)) as folder:
+                    staged=Chapter(folder,m.Document) if existing else chapter
+                    reserved={page['id'] for page in chapter.pages}
+                    for name,path in paths:
+                        source=m.read_image(path)
+                        graph=m.RegionGraph.for_legacy(source,name)
+                        if graph.page_id in reserved:graph.page_id=uuid4().hex
+                        doc=m.Document(source,source,name,m.np.zeros(source.shape[:2],m.np.uint8),region_graph=graph,dirty=True)
+                        staged.add(doc,raw=True)
+                    if existing:
+                        linked=[]
+                        try:
+                            for page in staged.pages:
+                                filename=page['id']+'.mangaclean';target=chapter.folder/filename
+                                os.link(staged.folder/filename,target);linked.append(target)
+                        except OSError:
+                            for target in linked:target.unlink(missing_ok=True)
+                            raise
+                        chapter.pages.extend(staged.pages)
+                if chapter.active is None:chapter.activate(store,chapter.pages[0]['id'],flush=False)
                 store.chapter=chapter
-                if old_active is None:chapter.activate(store,chapter.pages[0]['id'],flush=False)
                 store.preview=None;m.clear_render_cache()
                 return m.public_state()
         except (ValueError,OSError,KeyError) as error:raise HTTPException(422,str(error)) from error
@@ -114,7 +127,7 @@ def register(namespace):
                 try:
                     doc=store.document if page['id']==chapter.active else chapter.decode(page['id'])
                     m.require_export_ready(doc)
-                    image=m.composite(doc.working,doc.dialogues,doc.bubbles)
+                    image=m.composite_page(doc)
                     stem=re.sub(r'[^A-Za-z0-9_-]+','-',Path(page['name']).stem)[:70] or 'page'
                     path=folder/f'{index:03d}-{stem}.{ "png" if payload.kind=="png" else "jpg" }'
                     if path.exists():raise FileExistsError('Export file already exists.')

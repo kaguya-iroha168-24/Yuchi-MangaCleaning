@@ -21,7 +21,10 @@ from pathlib import Path
 for line in sys.stdin:
  request=json.loads(Path(json.loads(line)).read_text())
  time.sleep(request.get('delay',0))
- Path(request['output']).write_text(json.dumps({'ok':True,'hardware':{'pid':os.getpid(),'marker':request.get('marker','first')}}))
+ output=Path(request['output'])
+ pending=output.with_suffix('.tmp')
+ pending.write_text(json.dumps({'ok':True,'hardware':{'pid':os.getpid(),'marker':request.get('marker','first')}}))
+ os.replace(pending,output)
 ''')
         original = subprocess.Popen
         def launch(command, **kwargs):

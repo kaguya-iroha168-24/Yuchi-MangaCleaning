@@ -7,6 +7,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mangaclean.services import typesetting_render as renderer
+from mangaclean.core.dialogue import manga_lettering
 from PIL import Image, ImageDraw
 
 
@@ -36,6 +37,25 @@ class LayoutTests(unittest.TestCase):
         self.assertGreaterEqual(result['effectiveSize'], 12)
         self.assertEqual(values['text'], 'Kaktus')
 
+    def test_manga_lettering_fits_narrow_caption_with_installed_bold_italic_face(self):
+        if 700 not in renderer.italic_font_faces().get('Komika Text Kaps', {}):
+            self.skipTest('Komika Text Kaps Bold Italic is not installed.')
+        values = self.dialogue(text='SEPULUH MENIT KEMUDIAN', width=52, height=88, family='Segoe UI',
+                               size=32, minimum_size=8, padding=4)
+        mask = Image.new('L', (52, 88))
+        ImageDraw.Draw(mask).rectangle((1, 1, 50, 86), fill=255)
+        clip = BytesIO()
+        mask.save(clip, 'PNG')
+        encoded = base64.b64encode(clip.getvalue())
+        old = renderer.render(values, encoded)
+        new = renderer.render({**values, **manga_lettering(52, 88, (1600, 1114))}, encoded)
+        self.assertEqual((new['resolvedFamily'], new['resolvedWeight'], new['resolvedItalic']), ('Komika Text Kaps', 700, True))
+        self.assertFalse(new['overflow'])
+        self.assertGreater(new['effectiveSize'], old['effectiveSize'])
+        alpha = Image.open(BytesIO(base64.b64decode(new['png']))).getchannel('A')
+        left, top, right, bottom = alpha.getbbox()
+        self.assertTrue(1 <= left < right <= 51 and 1 <= top < bottom <= 87)
+
     def test_word_boundaries_punctuation_and_manual_empty_lines(self):
         text = 'Mimpiku malam itu sedikit berbeda dari semalam'
         lines = renderer.lines_for(text, renderer.font_at('arial.ttf', 32), 204)
@@ -53,6 +73,23 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual({a['effectiveSize'], b['effectiveSize'], bold['effectiveSize']}, {47})
         self.assertNotEqual(a['png'], b['png'])
         self.assertNotEqual(a['png'], bold['png'])
+
+    def test_v4_style_changes_visible_pixels_and_auto_width_reports_content_width(self):
+        values = self.dialogue(text='Ink!\nManga', width=400, height=240, size=32, auto_fit=False)
+        plain = renderer.render(values)
+        styled = renderer.render(dict(values, style=dict(italic=True, rotation=12, vertical_offset=4,
+            line_height=1.25, letter_spacing=2, stroke_width=2, stroke_color='#ff0000', auto_width=True)))
+        self.assertFalse(styled['overflow'])
+        self.assertTrue(styled['resolvedItalic'])
+        self.assertLess(styled['layoutWidth'], plain['layoutWidth'])
+        self.assertNotEqual(styled['png'], plain['png'])
+        pixels = Image.open(BytesIO(base64.b64decode(styled['png'])))
+        self.assertTrue(any(red > green and alpha for red, green, _, alpha in pixels.getdata()))
+
+    def test_vertical_offset_cannot_silently_clip_text(self):
+        result = renderer.render(self.dialogue(width=180, height=70, size=26, auto_fit=False,
+                                               style={'vertical_offset': 100}))
+        self.assertTrue(result['overflow'])
 
     def test_cjk_fallback_explicit_and_unicode_unchanged(self):
         values = self.dialogue(text='何そのカッコ', width=200, height=200)

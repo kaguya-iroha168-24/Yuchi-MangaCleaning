@@ -50,4 +50,16 @@ class BubbleGeometryAPI(unittest.TestCase):
             self.assertEqual(main.store.document.bubbles[0].rect,(10,10,20,20))
         self.assertEqual(self.client.post(self.path,json={'rect':[8,8,24,24]}).status_code,401)
 
+    def test_repeated_shrink_expand_keeps_source_masks_and_history(self):
+        original=self.b.segmentation.copy()
+        self.assertEqual(self.post(self.path,{'rect':[10,10,20,10]}).status_code,200)
+        self.assertEqual(self.post(self.path,{'rect':[10,10,20,20]}).status_code,200)
+        np.testing.assert_array_equal(main.store.document.bubbles[0].segmentation,original)
+        self.assertIsNone(main.store.preview)
+        self.assertEqual(self.post('/v1/undo').status_code,200)
+        self.assertEqual(main.store.document.bubbles[0].rect,(10,10,20,10))
+        self.assertEqual(self.post('/v1/redo').status_code,200)
+        np.testing.assert_array_equal(main.store.document.bubbles[0].segmentation,original)
+        np.testing.assert_array_equal(main.store.document.source,main.store.document.working)
+
 if __name__=='__main__':unittest.main()

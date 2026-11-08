@@ -100,13 +100,13 @@ async function inspector(session, api) {
   const synthetic = exports => new vm.SyntheticModule(Object.keys(exports), function () { for (const [key, value] of Object.entries(exports)) this.setExport(key, value); }, { context });
   const jsx = (type, props) => ({ type, props });
   const react = synthetic({
-    useState: initial => { const index = cursor++; if (!(index in hooks)) hooks[index] = initial; return [hooks[index], value => { hooks[index] = value; }]; },
+    useState: initial => { const index = cursor++; if (!(index in hooks)) hooks[index] = typeof initial === 'function' ? initial() : initial; return [hooks[index], value => { hooks[index] = value; }]; },
     useEffect: (effect, deps) => { const index = cursor++, previous = hooks[index]; if (!previous || deps.some((value, item) => value !== previous[item])) { hooks[index] = deps; effect(); } },
     useMemo: factory => factory(), useRef: () => ({ current: null }), useSyncExternalStore: (_subscribe, getSnapshot) => { currentSnapshot = getSnapshot; return getSnapshot(); },
   });
-  const runtime = synthetic({ jsx, jsxs: jsx }), font = synthetic({ FontBrowser: () => null }), overlay = synthetic({ TextRegionOverlay: () => null });
+  const runtime = synthetic({ jsx, jsxs: jsx, Fragment: 'fragment' }), font = synthetic({ FontBrowser: () => null }), overlay = synthetic({ TextRegionOverlay: () => null });
   const component = await compile('../src/components/Typography.tsx');
-  await component.link(name => name === 'react' ? react : name === 'react/jsx-runtime' ? runtime : name.includes('ui/typography') ? typography : name.includes('FontBrowser') ? font : overlay);
+  await component.link(async name => name === 'react' ? react : name === 'react/jsx-runtime' ? runtime : name === 'lucide-react' ? synthetic(await import(name)) : name.includes('ui/typography') ? typography : name.includes('FontBrowser') ? font : overlay);
   await component.evaluate();
   const render = (selected = text, disabled = false) => { cursor = 0; return component.namespace.TypographyControls({ api, session, selected, disabled, onDelete() {}, sourceControls: null }); };
   render.cardSnapshot = () => {

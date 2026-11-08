@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 from time import perf_counter, sleep
@@ -21,6 +22,45 @@ class DetectorUnavailable(RuntimeError):
 _session = None
 _lock = threading.Lock()
 DETECTOR_IDLE_SECONDS = 60
+
+
+def startup_gpu_available():
+    """Use a cheap driver query before starting the Python model process."""
+    if os.name != 'nt':
+        return False
+    executable = shutil.which('nvidia-smi')
+    if executable is None:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [('length', wintypes.DWORD), ('load', wintypes.DWORD),
+                    ('total_physical', ctypes.c_uint64), ('available_physical', ctypes.c_uint64),
+                    ('other_memory', ctypes.c_uint64 * 5)]
+
+    memory = MemoryStatus()
+    memory.length = ctypes.sizeof(memory)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) or memory.available_physical < 4 * 2**30:
+        return False
+    try:
+        gpu = subprocess.run([executable, '--id=0', '--query-gpu=memory.total,memory.free',
+                              '--format=csv,noheader,nounits'], capture_output=True, text=True, check=True,
+                             timeout=3, creationflags=subprocess.CREATE_NO_WINDOW)
+        total, free = map(int, gpu.stdout.strip().split(','))
+        return total >= 4096 and free >= 3072
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
+def warm_detector(cancel):
+    if cancel.is_set() or not startup_gpu_available() or cancel.is_set():
+        return None
+    try:
+        result = YuchiProcess(detection_config('shima_v1'))._request(action='hardware_probe', startup_cancel=cancel)
+        return result['hardware'] if result is not None else None
+    except DetectorUnavailable:
+        return None
 
 
 def session_key(config):
@@ -43,7 +83,7 @@ class InferenceSession:
             stdout=self.log, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
 
-    def close(self):
+    def close(self, grace_seconds=5):
         if self.idle_timer:
             self.idle_timer.cancel()
             self.idle_timer = None
@@ -51,7 +91,7 @@ class InferenceSession:
             try:self.process.stdin.close()
             except OSError:pass
             try:
-                self.process.wait(timeout=5)
+                self.process.wait(timeout=grace_seconds)
             except subprocess.TimeoutExpired:
                 if os.name=='nt':
                     subprocess.run(['taskkill','/PID',str(self.process.pid),'/T','/F'],capture_output=True,
@@ -121,7 +161,7 @@ class YuchiProcess:
     def probe(self):
         return self._request(action='hardware_probe')['hardware']
 
-    def _request(self,image=None,action='infer'):
+    def _request(self,image=None,action='infer',startup_cancel=None):
         config = self.config
         python = Path(config['inference_python'])
         checkpoint = Path(config['checkpoint'])
@@ -144,6 +184,8 @@ class YuchiProcess:
             result_path = folder/'result.json'
             global _session
             with _lock:
+                if startup_cancel is not None and (startup_cancel.is_set() or _session is not None):
+                    return None
                 try:
                     key = session_key(config)
                     if _session is None or _session.key != key or _session.process.poll() is not None:
@@ -156,8 +198,13 @@ class YuchiProcess:
                         session.idle_timer = None
                     session.process.stdin.write(json.dumps(str(folder/'request.json'))+'\n')
                     session.process.stdin.flush()
-                    deadline = perf_counter()+(min(45,config['timeout_seconds'])if action=='hardware_probe'else config['timeout_seconds'])
+                    timeout = min(45, config['timeout_seconds']) if action == 'hardware_probe' and startup_cancel is None else config['timeout_seconds']
+                    deadline = perf_counter() + timeout
                     while not result_path.exists():
+                        if startup_cancel is not None and startup_cancel.is_set():
+                            session.close(grace_seconds=.5)
+                            _session = None
+                            return None
                         if session.process.poll() is not None:
                             raise DetectorUnavailable('Inference process stopped. '+session.log_path.read_text(encoding='utf-8')[-8000:])
                         if perf_counter() >= deadline:
@@ -166,7 +213,9 @@ class YuchiProcess:
                             raise DetectorUnavailable('Detector inference timed out; choose OpenCV or retry.')
                         sleep(.025)
                     result = read_response(result_path, deadline)
-                    if not result.get('ok')or (action=='hardware_probe'and result.get('hardware',{}).get('cuda_failed')):
+                    hardware = result.get('hardware', {})
+                    if (not result.get('ok') or hardware.get('cuda_failed')
+                            or (startup_cancel is not None and not hardware.get('gpu_available'))):
                         session.close();_session=None
                     else:
                         def expire():

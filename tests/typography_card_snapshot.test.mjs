@@ -25,13 +25,16 @@ async function component(source) {
     useMemo:(factory,deps)=>{const h=active; if(!h.memo||deps.some((x,i)=>!Object.is(x,h.deps[i]))){h.memo=factory();h.deps=deps;}return h.memo;},
     useSyncExternalStore:(subscribe,get)=>{const h=active;h.get=get;if(!h.stop)h.stop=subscribe(()=>{h.callbacks++;const value=h.get();if(!Object.is(value,h.value)){h.updates++;h.render();}});h.value=get();return h.value;}
   });
-  const helpers=synthetic(['cardDialogue','fontSizePatch'],{cardDialogue:(items,bubble,selected)=>{const linked=items.filter(x=>x.bubble_id===bubble);return linked.length===1?linked[0]:linked.find(x=>x.id===selected)??null;},fontSizePatch:()=>{}});
-  const runtime=synthetic(['jsx','jsxs'],{jsx,jsxs:jsx});
+  const helpers=synthetic(['cardDialogue','fontSizePatch','readSizePresets'],{cardDialogue:(items,bubble,selected)=>{const linked=items.filter(x=>x.bubble_id===bubble);return linked.length===1?linked[0]:linked.find(x=>x.id===selected)??null;},fontSizePatch:()=>{},readSizePresets:()=>[]});
+  const runtime=synthetic(['jsx','jsxs','Fragment'],{jsx,jsxs:jsx,Fragment:'fragment'});
   const overlay=synthetic(['TextRegionOverlay'],{TextRegionOverlay:()=>null});
   const browser=synthetic(['FontBrowser'],{FontBrowser:()=>null});
   const code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext,jsx:ts.JsxEmit.ReactJSX}}).outputText;
   const mod=new vm.SourceTextModule(code,{context});
-  await mod.link(name=>name==='react'?react:name==='react/jsx-runtime'?runtime:name.includes('ui/typography')?helpers:name.includes('FontBrowser')?browser:overlay);await mod.evaluate();
+  await mod.link(async name=>{
+    if(name==='lucide-react'){const icons=await import(name);return synthetic(Object.keys(icons),icons);}
+    return name==='react'?react:name==='react/jsx-runtime'?runtime:name.includes('ui/typography')?helpers:name.includes('FontBrowser')?browser:overlay;
+  });await mod.evaluate();
   return props=>{const h={props,callbacks:0,updates:0,executions:0,render(){active=h;h.executions++;h.output=mod.namespace.TypographyCardControls(h.props);active=null;}};h.render();return h;};
 }
 const mount=await component(current);

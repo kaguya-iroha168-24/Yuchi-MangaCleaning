@@ -12,12 +12,13 @@ import numpy as np
 
 from mangaclean.core.bubble_detector import Bubble
 from mangaclean.core.dialogue import Dialogue
+from mangaclean.core.composition import page_composition, typography_style
 from mangaclean.core.mask_processor import validate_mask, validate_image
 from mangaclean.core.bubble_review import REVIEW_DECISIONS, CANDIDATE_KINDS, CLEANING_STATES
 from mangaclean.core.region_graph import RegionGraph, image_digest
 
 
-def save_project(path, snapshot, overwrite=False):
+def save_project(path, snapshot, overwrite=False, *, fast_raster=False):
     target = Path(path)
     if target.exists() and not overwrite:
         raise FileExistsError('Project exists; choose a new name or confirm replacement.')
@@ -29,26 +30,38 @@ def save_project(path, snapshot, overwrite=False):
     graph_data['source_sha256'] = image_digest(snapshot['source'])
     if graph.source_sha256 is not None and graph.source_sha256 != graph_data['source_sha256']:
         raise ValueError('Source image does not match the region graph fingerprint.')
-    manifest = {'format':'MangaClean', 'version':3, 'source_name':Path(snapshot['source_name']).name,
-                'clean_present':snapshot['clean'] is not None, 'bubbles':[],
-                'dialogues':[asdict(t) for t in snapshot['dialogues']],
-                'active_text_id':snapshot.get('active_text_id'),
-                'detection_runs':snapshot.get('detection_runs', [])[-10:],
-                'region_graph':graph_data}
+    composition = page_composition(snapshot.get('composition', {}))
+    styles, locks, dialogues = {}, [], []
     for text in snapshot['dialogues']:
         text.validate()
         if text.source_region_id is not None and graph.region(text.source_region_id) is None:
             raise ValueError('Dialogue references a missing source TextRegion.')
+        row = asdict(text)
+        if style := row.pop('style'): styles[text.id] = style
+        if row.pop('locked'): locks.append(text.id)
+        dialogues.append(row)
+    if styles: composition['typography'] = styles
+    if locks: composition['locked_dialogues'] = locks
+    manifest = {'format':'MangaClean', 'version':4 if composition else 3, 'source_name':Path(snapshot['source_name']).name,
+                'clean_present':snapshot['clean'] is not None, 'bubbles':[], 'dialogues':dialogues,
+                'active_text_id':snapshot.get('active_text_id'),
+                'detection_runs':snapshot.get('detection_runs', [])[-10:], 'region_graph':graph_data}
+    if composition: manifest['composition'] = composition
     handle, temp = tempfile.mkstemp(prefix='.mangaclean-', suffix='.tmp', dir=target.parent)
     os.close(handle)
-    def png(package, name, array):
+    def encode_png(array):
         ok, encoded = cv2.imencode('.png', array)
         if not ok: raise ValueError('Could not encode project image.')
-        package.writestr(name, encoded.tobytes())
+        return encoded.tobytes()
+    def png(package, name, array):
+        package.writestr(name, encode_png(array))
     try:
         with zipfile.ZipFile(temp, 'w', zipfile.ZIP_DEFLATED) as package:
-            png(package,'original.png',snapshot['source'])
-            png(package,'working.png',snapshot['clean'] if snapshot['clean'] is not None else snapshot['source'])
+            original = encode_png(snapshot['source'])
+            working = encode_png(snapshot['clean']) if snapshot['clean'] is not None else original
+            compression = zipfile.ZIP_STORED if fast_raster else zipfile.ZIP_DEFLATED
+            package.writestr('original.png', original, compress_type=compression)
+            package.writestr('working.png', working, compress_type=compression)
             png(package,'mask.png',snapshot['mask'])
             if snapshot['manual_mask'] is not None:
                 png(package,'manual.png',snapshot['manual_mask'])
@@ -94,9 +107,10 @@ def load_project(path):
                 return package.read(name)
             manifest=json.loads(read('manifest.json',2_000_000))
             if not isinstance(manifest,dict):raise ValueError('Project manifest must be an object.')
-            if manifest.get('format')!='MangaClean' or type(manifest.get('version')) is not int or manifest['version'] not in (1,2,3):
+            if manifest.get('format')!='MangaClean' or type(manifest.get('version')) is not int or manifest['version'] not in (1,2,3,4):
                 raise ValueError('Unsupported MangaClean project format/version.')
             allowed={'format','version','source_name','clean_present','bubbles','dialogues','active_text_id','detection_runs','region_graph'}
+            if manifest['version'] == 4: allowed.add('composition')
             if set(manifest)-allowed:
                 raise ValueError('Unknown project metadata; refusing a potentially lossy migration.')
             def image(name):
@@ -178,12 +192,24 @@ def load_project(path):
                             validate_image(pixels)
                             if pixels.shape[:2]!=(h,w):raise ValueError('Invalid result-review crop dimensions.')
                         setattr(bubbles[-1],key,pixels)
+            if any({'style', 'locked'} & entry.keys() for entry in manifest['dialogues'] if isinstance(entry, dict)):
+                raise ValueError('Extended dialogue properties belong in project composition.')
             dialogues=[Dialogue(**entry) for entry in manifest['dialogues']]
             ids=[b.id for b in bubbles]
             text_ids=[t.id for t in dialogues]
             if len(set(ids))!=len(ids) or len(set(text_ids))!=len(text_ids):
                 raise ValueError('Duplicate object IDs in project.')
+            composition = manifest.get('composition', {})
+            if not isinstance(composition, dict): raise ValueError('Invalid project composition.')
+            styles = composition.pop('typography', {})
+            locks = composition.pop('locked_dialogues', [])
+            composition = page_composition(composition)
+            if (not isinstance(styles, dict) or set(styles) - set(text_ids) or not isinstance(locks, list)
+                    or any(not isinstance(key, str) or key not in text_ids for key in locks) or len(set(locks)) != len(locks)):
+                raise ValueError('Composition references an invalid dialogue.')
             for t in dialogues:
+                t.style = typography_style(styles.get(t.id, {}))
+                t.locked = t.id in locks
                 t.validate()
                 if not isinstance(t.id,str) or not t.id or len(t.id)>100:
                     raise ValueError('Invalid text ID.')
@@ -191,7 +217,7 @@ def load_project(path):
             runs=manifest.get('detection_runs',[])
             if not isinstance(runs,list) or len(runs)>10 or any(not isinstance(run,dict) for run in runs):
                 raise ValueError('Invalid detector history in project.')
-            if manifest['version'] in (2,3) or 'region_graph' in manifest:
+            if manifest['version'] in (2,3,4) or 'region_graph' in manifest:
                 graph=RegionGraph.from_dict(manifest['region_graph'],source.shape,bubbles)
                 if graph.source_sha256!=image_digest(source):
                     raise ValueError('Source image does not match the region graph fingerprint.')
@@ -203,6 +229,6 @@ def load_project(path):
             return {'source':source,'clean':working if manifest['clean_present'] else None,
                     'mask':mask,'manual_mask':manual,'bubbles':bubbles,'dialogues':dialogues,
                     'path':Path(manifest['source_name']).name,'active_text_id':manifest.get('active_text_id'),
-                    'detection_runs':runs,'region_graph':graph}
+                    'detection_runs':runs,'region_graph':graph,'composition':composition}
     except (zipfile.BadZipFile,json.JSONDecodeError,KeyError,TypeError,OverflowError) as error:
         raise ValueError(f'Invalid MangaClean project: {error}') from error

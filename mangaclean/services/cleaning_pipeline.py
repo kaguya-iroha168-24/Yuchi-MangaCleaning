@@ -10,7 +10,7 @@ import numpy as np
 from mangaclean.core.bubble_review import repair_empty_mask
 from mangaclean.core.bubble_detector import effective_bubble_mask
 from mangaclean.core.mask_processor import validate_mask, dilate_mask
-from mangaclean.core.text_cleaning import selection_mask
+from mangaclean.core.text_cleaning import selection_mask, selection_rect
 
 
 @dataclass
@@ -120,6 +120,59 @@ def _rect_ink(gray,safe,padding):
     return dilate_mask(keep[labels],padding)&safe,len(ids),[]
 
 
+def boundary_ink_mask(gray, safe, padding=2):
+    """Protect whole ink strokes that connect the interior to outside artwork."""
+    count, labels = cv2.connectedComponents(cv2.inRange(gray, 0, 205))
+    outside_labels = np.unique(labels[safe == 0])
+    protected = np.zeros(count, np.uint8)
+    protected[outside_labels] = 255
+    protected[0] = 0
+    return dilate_mask(protected[labels], max(2, padding))
+
+
+def prepare_text_selection(image, rect, bubble=None):
+    x, y, w, h = selection_rect(image, rect)
+    roi = image[y:y+h, x:x+w]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    if np.mean(gray >= 205) < .70:
+        raise ValueError('This text box does not have a reliably light background. No artwork was changed.')
+    glyphs = selection_mask(roi, (0, 0, w, h), padding=0).mask
+    safe = np.full_like(gray, 255)
+    safe[[0, -1], :] = 0
+    safe[:, [0, -1]] = 0
+    if bubble is not None:
+        bx, by, bw, bh = bubble.rect
+        if x < bx or y < by or x+w > bx+bw or y+h > by+bh:
+            raise ValueError('Keep the linked text box inside its bubble before cleaning.')
+        safe &= bubble.interior[y-by:y-by+h, x-bx:x-bx+w]
+
+    # Use complete ink components before clipping, so an outline that crosses
+    # the box or bubble interior is never treated as a detached glyph.
+    ink = cv2.inRange(gray, 0, 205)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(ink)
+    protected = np.zeros(count, np.uint8)
+    protected[np.unique(labels[safe == 0])] = 255
+    protected[0] = 0
+    for k, (_, _, cw, ch, area) in enumerate(stats[1:], 1):
+        if (cw >= .88*w or ch >= .88*h or area > .24*w*h
+                or (cw >= .45*w and cw >= 8*ch) or (ch >= .45*h and ch >= 8*cw)):
+            protected[k] = 255
+    safe &= cv2.bitwise_not(dilate_mask(protected[labels], 2))
+    glyphs &= safe
+    _, _, candidates, _ = cv2.connectedComponentsWithStats(glyphs)
+    areas = candidates[1:, 4]
+    if len(areas) > 40 and np.std(areas)/max(1, np.mean(areas)) < .2:
+        raise ValueError('Repeated fine marks may be artwork or screentone. No artwork was changed.')
+    local = dilate_mask(glyphs, 2) & safe
+    if not np.any(local) or np.count_nonzero(local) > .52*w*h:
+        raise ValueError('No reliable text mask in this box. Adjust the selection and try again.')
+    mask = np.zeros(image.shape[:2], np.uint8)
+    interior = np.zeros_like(mask)
+    mask[y:y+h, x:x+w] = local
+    interior[y:y+h, x:x+w] = safe
+    return mask, interior
+
+
 def _segment(image,bubble,padding):
     draft=deepcopy(bubble)
     if not np.any(draft.interior):draft=repair_empty_mask(image,draft,padding)
@@ -138,6 +191,11 @@ def _segment(image,bubble,padding):
         mask=selected.mask&safe
         count=cv2.connectedComponents((mask>0).astype(np.uint8))[0]-1
         strategy='closed white component; glyph mask'
+    # Label before clipping. Otherwise an outline crossing the predicted
+    # interior looks like an isolated glyph after the safe mask cuts it apart.
+    protected_ink = boundary_ink_mask(gray, safe, padding)
+    protected_pixels = int(np.count_nonzero(mask & protected_ink))
+    mask &= cv2.bitwise_not(protected_ink)
     n,_,ink_stats,_=cv2.connectedComponentsWithStats(cv2.inRange(gray,0,185)&safe)
     small=ink_stats[1:,4]
     if (len(small)>40 and np.median(small)<=8
@@ -151,7 +209,8 @@ def _segment(image,bubble,padding):
     if not np.any(mask):warnings.append('No reliable pending text strokes. Use mask editing; no fill will be substituted.')
     analysis=dict(strategy=strategy,automatic_mask_confidence='review' if warnings else 'high',
         warnings=warnings,mask_pixels=int(np.count_nonzero(mask)),masked_fraction=masked_fraction,
-        light_fraction=white_fraction,components=int(count),semantic_verification=False)
+        light_fraction=white_fraction,components=int(count),protected_ink_pixels=protected_pixels,
+        semantic_verification=False)
     draft.text=mask.copy()
     draft.provenance=dict(draft.provenance,mask_analysis=analysis)
     return draft,mask,safe,analysis

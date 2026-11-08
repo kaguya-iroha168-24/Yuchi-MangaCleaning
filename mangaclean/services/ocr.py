@@ -13,7 +13,7 @@ import cv2
 ROOT=Path(__file__).resolve().parents[2]
 RUNTIME_IDLE_SECONDS=10
 _runtime_lock=RLock()
-_runtime=None
+_runtimes={}
 
 
 class OCRCancelled(RuntimeError):
@@ -57,12 +57,12 @@ def stop_process(process):
 
 
 class _Runtime:
-    """Cache imports only for a short editing burst; models remain request-local."""
-    def __init__(self,command,key,env,log_path):
+    """Keep each OCR host alive only for a short burst of requests."""
+    def __init__(self,command,key,env,log_path,serve_flag):
         self.key=key;self.log_path=log_path;self.timer=None
         self.log=log_path.open('w',encoding='utf-8')
         try:
-            self.process=subprocess.Popen([*command,'--serve'],cwd=ROOT,env=env,stdin=subprocess.PIPE,
+            self.process=subprocess.Popen([*command,serve_flag],cwd=ROOT,env=env,stdin=subprocess.PIPE,
                 stdout=self.log,stderr=subprocess.STDOUT,text=True,encoding='utf-8',
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt'else 0)
         except BaseException:self.log.close();raise
@@ -81,41 +81,33 @@ class _Runtime:
 def close_ocr(wait=True):
     if not wait:
         Thread(target=close_ocr,daemon=True).start();return
-    global _runtime
     with _runtime_lock:
-        if _runtime is not None:
-            runtime=_runtime;_runtime=None;runtime.close()
+        for serve_flag in tuple(_runtimes):
+            _runtimes.pop(serve_flag).close()
 
 
 @contextmanager
-def _request_process(command,request,config,env,log_path,reuse):
-    global _runtime
-    if not reuse:
-        with log_path.open('w',encoding='utf-8')as log:
-            process=subprocess.Popen([*command,str(request)],cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt'else 0)
-            try:yield process,log_path,0
-            finally:
-                if process.poll()is None:stop_process(process)
-        return
+def _request_process(command,request,config,env,log_path,serve_flag,script):
     with _runtime_lock:
-        key=(tuple(command),config['device'],config.get('model_directory'),(ROOT/'scripts/ocr_inference.py').stat().st_mtime_ns)
-        fresh=_runtime is None or _runtime.key!=key or _runtime.process.poll()is not None
+        key=(tuple(command),config['device'],config.get('model_directory'),script.stat().st_mtime_ns)
+        runtime=_runtimes.get(serve_flag)
+        fresh=runtime is None or runtime.key!=key or runtime.process.poll()is not None
         if fresh:
-            close_ocr();_runtime=_Runtime(command,key,env,log_path)
-        runtime=_runtime
+            if runtime is not None:_runtimes.pop(serve_flag).close()
+            runtime=_Runtime(command,key,env,log_path,serve_flag)
+            _runtimes[serve_flag]=runtime
         if runtime.timer:runtime.timer.cancel();runtime.timer=None
         try:
             offset=0 if fresh else runtime.log_path.stat().st_size
             runtime.process.stdin.write(str(request)+'\n');runtime.process.stdin.flush()
             yield runtime.process,runtime.log_path,offset
         except BaseException:
-            close_ocr();raise
+            _runtimes.pop(serve_flag).close();raise
         else:
             def expire():
-                global _runtime
                 with _runtime_lock:
-                    if _runtime is runtime and runtime.timer is timer:_runtime=None;runtime.close(graceful=True)
+                    if _runtimes.get(serve_flag) is runtime and runtime.timer is timer:
+                        _runtimes.pop(serve_flag).close(graceful=True)
             timer=Timer(RUNTIME_IDLE_SECONDS,expire);runtime.timer=timer;timer.daemon=True;timer.start()
 
 
@@ -123,11 +115,14 @@ atexit.register(close_ocr)
 
 
 class MangaOCRProvider:
+    script=ROOT/'scripts/ocr_inference.py'
+    serve_flag='--serve'
+
     def command(self,config):
         python=Path(config['python']);model=Path(config['model_directory'])
         if not python.is_file():raise OCRUnavailable('OCR environment is missing. Manual transcription is still available.')
         if not(model/'LOCAL_MANIFEST.json').is_file():raise OCRUnavailable('Local Manga OCR model is missing. No automatic download was attempted.')
-        return [str(python),'-B',str(ROOT/'scripts/ocr_inference.py')]
+        return [str(python),'-B',str(self.script)]
 
     def recognize(self,crop,config,cancel,on_progress=None):
         command=self.command(config)
@@ -146,13 +141,21 @@ class MangaOCRProvider:
             request.write_text(json.dumps(dict(config,input=str(image),output=str(result))),encoding='utf-8')
             logs=cache/'logs';logs.mkdir(exist_ok=True)
             log_path=logs/(uuid4().hex+'.log')
-            reuse=type(self)is MangaOCRProvider
-            with _request_process(command,request,config,env,log_path,reuse)as(process,log_path,log_offset):
+            with _request_process(command,request,config,env,log_path,self.serve_flag,self.script)as(process,log_path,log_offset):
                 end=time.monotonic()+config['timeout_seconds']
                 last_stage=None;next_log=0
-                while process.poll()is None and not(reuse and result.is_file()):
+                while True:
                     if cancel.is_set():raise OCRCancelled('OCR cancelled. Existing source transcription is unchanged.')
                     if time.monotonic()>end:raise OCRUnavailable('OCR timed out during '+(last_stage or 'worker execution; last stage unavailable')+'. Source transcription is unchanged; retry or transcribe manually.')
+                    if result.is_file():
+                        try:
+                            response=json.loads(result.read_text(encoding='utf-8'))
+                            break
+                        except PermissionError:
+                            # Windows can briefly expose the renamed file before it can be opened.
+                            pass
+                    elif process.poll() is not None:
+                        raise OCRUnavailable('OCR worker failed: '+log_path.read_text(encoding='utf-8')[-5000:])
                     if time.monotonic()>=next_log:
                         next_log=time.monotonic()+.3
                         with log_path.open(encoding='utf-8',errors='replace')as log:log.seek(log_offset);lines=log.read().splitlines()
@@ -162,19 +165,20 @@ class MangaOCRProvider:
                             if on_progress:on_progress(last_stage)
                     time.sleep(.03)
                 if cancel.is_set():raise OCRCancelled('OCR cancelled. Existing source transcription is unchanged.')
-                if not result.is_file():raise OCRUnavailable('OCR worker failed: '+log_path.read_text(encoding='utf-8')[-5000:])
-                response=json.loads(result.read_text(encoding='utf-8'))
                 if not response.get('ok'):raise OCRUnavailable(response.get('error','OCR failed.')+'\n'+response.get('traceback',''))
                 return dict(response['result'],log_path=str(log_path))
 
 
 class WindowsOCRProvider(MangaOCRProvider):
+    script=ROOT/'scripts/windows_ocr.ps1'
+    serve_flag='-Serve'
+
     def command(self,config):
         if os.name!='nt':raise OCRUnavailable('English Windows OCR is unavailable on this platform.')
         if config['device']!='cpu':raise ValueError('English Windows OCR uses CPU.')
         python=Path(os.environ.get('WINDIR',r'C:\Windows'))/'System32/WindowsPowerShell/v1.0/powershell.exe'
         if not python.is_file():raise OCRUnavailable('Windows OCR host is unavailable. No installation was attempted.')
-        return [str(python),'-NoProfile','-File',str(ROOT/'scripts/windows_ocr.ps1'),'-RequestPath']
+        return [str(python),'-NoProfile','-NonInteractive','-File',str(self.script)]
 
     def recognize(self,crop,config,cancel,on_progress=None):
         started=time.monotonic()
