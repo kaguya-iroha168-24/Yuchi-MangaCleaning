@@ -1,4 +1,4 @@
-/* Paper White workspace styling. Artwork uses the original image and render data. */
+/* Workspace layout and controls. Artwork uses the original image and render data. */
 :root { --studio-header-height:52px; --studio-inspector-width:300px; }
 body {min-width:720px;background:var(--studio-primary);color:var(--studio-text)}
 .app {font-size:13px;min-height:480px}
@@ -111,9 +111,6 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .gemini-key-row {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px}
 .gemini-key-row>button {margin-bottom:8px;min-height:34px}
 .gemini-status {margin:0;min-height:18px;color:var(--studio-text)}
-.theme-options {display:flex;gap:8px}
-.theme-options button {display:inline-flex;gap:6px;align-items:center;font-size:12px}
-.theme-options [aria-pressed=true] {border-color:var(--studio-accent);color:var(--studio-accent-ink);background:var(--studio-tint)}
 .review-actions {display:flex;flex-wrap:wrap;align-items:center;gap:4px}
 .review-label,.warning-note {color:var(--studio-accent-ink)}
 details {margin:12px 0} summary {cursor:pointer;color:var(--studio-muted);padding:8px 0}

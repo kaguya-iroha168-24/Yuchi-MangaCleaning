@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Only core window and invoke capabilities for the local editor.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-theme"]
+  "permissions": ["core:default"]
 }

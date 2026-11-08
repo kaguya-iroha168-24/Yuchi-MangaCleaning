@@ -9,7 +9,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Yuchi Labs — MangaClean Atelier", "width": 1440, "height": 900, "minWidth": 940, "minHeight": 590, "theme": "Light", "backgroundColor": "#F9F9FB", "create": false }],
+    "windows": [{ "title": "Yuchi Labs — MangaClean Atelier", "width": 1440, "height": 900, "minWidth": 940, "minHeight": 590, "theme": "Dark", "backgroundColor": "#151619", "create": false }],
     "security": { "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:" }
   },
   "bundle": { "active": false }

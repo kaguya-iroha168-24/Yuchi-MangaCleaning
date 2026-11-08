@@ -8,7 +8,7 @@ import { Aperture, CircleHelp, Eye, FolderOpen, Layers3, X } from 'lucide-react'
 import { Api, ApiError, type DetectionMode, type ExportPreflight, type Job, type LayerPatch, type PageComposition, type Preview, type State, type TextRegion, connect } from './api';
 import { ChapterNavigator } from './components/ChapterNavigator';
 import { ContextToolbar, DockResizeHandle, EngineStatusBar, FeatureBadge, InspectorDock, PageNavigator, StudioHeader, ToolRail, type DockTab } from './components/StudioShell';
-import { PreferencesDialog, QuickExportDialog, type Theme, type TranslationSettings } from './components/PreferencesDialog';
+import { PreferencesDialog, QuickExportDialog, type TranslationSettings } from './components/PreferencesDialog';
 import { blocksStudioShortcuts, resolveStudioShortcut } from './ui/shortcuts';
 import { CanvasWorkspace, ViewportModeControls, ViewportZoomControls } from './components/CanvasWorkspace';
 import { SourceTextDialog, sessionForRegion, type TextEditSession } from './components/SourceTextDialog';
@@ -66,7 +66,6 @@ export default function App() {
   const [selectedDialogueId, setSelectedDialogueId] = useState<string | null>(null);
   const [showTypography, setShowTypography] = useState(true);
   const [density, setDensity] = useState<Density>(() => (localStorage.getItem('yuchi-tauri-density') as Density) || 'Balanced');
-  const [theme, setTheme] = useState<Theme>(() => localStorage.getItem('yuchi-tauri-theme') === 'dark' ? 'dark' : 'light');
   const [settings, setSettings] = useState<boolean | 'gemini-key'>(false);
   const [exportFormat, setExportFormat] = useState<'png' | 'jpeg'>('png');
   const [tool, setTool] = useState<Tool>('select');
@@ -203,13 +202,6 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem('yuchi-tauri-density', density); }, [density]);
   useEffect(() => { localStorage.setItem('yuchi-tauri-detection-mode', detectionMode); }, [detectionMode]);
-  useEffect(() => {
-    window.document.documentElement.dataset.theme = theme;
-    localStorage.setItem('yuchi-tauri-theme', theme);
-    if ('__TAURI_INTERNALS__' in window) {
-      void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTheme(theme)).catch(() => {});
-    }
-  }, [theme]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if(event.key==='Delete' && !blocksStudioShortcuts(event.target,event.isComposing) && !settings && !exportOpen && !textEditor && !busy && !running){ event.preventDefault(); if(selectedDialogueId)deleteDialogue(selectedDialogueId);else if(detectionMode === 'bubble')excludeCandidate();return; }
@@ -576,7 +568,7 @@ export default function App() {
     {operationMessage && <div className="operation-overlay"><div className="operation-card"><p role="status">{operationMessage}</p><progress aria-label="Operation progress" max={1} value={activeJob && activeJob.progress > 0 ? Math.min(1, activeJob.progress) : undefined} />{activeJob && <button disabled={activeJob.cancelRequested} onClick={() => { if (api) void api.post(`/v1/jobs/${activeJob.id}/cancel`).catch(reportError); }}>{activeJob.cancelRequested ? 'Cancelling…' : 'Cancel'}</button>}</div></div>}
     <EngineStatusBar zoom={document && <ViewportZoomControls controller={viewport} />} connected={Boolean(api)} document={displayDocument} job={state.job} selected={selected.size} tool={tool} controller={viewport} onCancel={() => api && state.job && void action(async () => { await api.post(`/v1/jobs/${state.job!.id}/cancel`); })} />
     {textEditor && <SourceTextDialog session={textEditor} busy={busy} error={textEditorError} onClose={() => { if (!busy) setTextEditor(null); }} onSave={value => void saveEditorText(value)} />}
-    {settings && <PreferencesDialog api={api} theme={theme} onTheme={setTheme} needsGeminiKey={settings === 'gemini-key'} onClose={() => setSettings(false)} density={density} onDensity={setDensity} exportFormat={exportFormat} onExportFormat={setExportFormat} provider={provider} onProvider={setProvider} detectionMode={detectionMode} onDetectionMode={mode => { setDetectionMode(mode); setShowBoxes(true); resetSelection(); if (tool.startsWith('mask-')) setTool('select'); }} textMode={composition.text_mode ?? 'clean'} onTextMode={document && api ? mode => changeComposition({text_mode:mode}) : undefined} busy={busy || jobActive || regionGesture || Boolean(textEditor)} onReset={() => { setDensity('Balanced'); setLeftCollapsed(window.innerWidth < 1120); setRightCollapsed(false); setLeftWidth(220); setRightWidth(300); viewport.reset(); }} />}
+    {settings && <PreferencesDialog api={api} needsGeminiKey={settings === 'gemini-key'} onClose={() => setSettings(false)} density={density} onDensity={setDensity} exportFormat={exportFormat} onExportFormat={setExportFormat} provider={provider} onProvider={setProvider} detectionMode={detectionMode} onDetectionMode={mode => { setDetectionMode(mode); setShowBoxes(true); resetSelection(); if (tool.startsWith('mask-')) setTool('select'); }} textMode={composition.text_mode ?? 'clean'} onTextMode={document && api ? mode => changeComposition({text_mode:mode}) : undefined} busy={busy || jobActive || regionGesture || Boolean(textEditor)} onReset={() => { setDensity('Balanced'); setLeftCollapsed(window.innerWidth < 1120); setRightCollapsed(false); setLeftWidth(220); setRightWidth(300); viewport.reset(); }} />}
     {exportOpen && document && <QuickExportDialog chapterCount={state.chapter?.pages.length} onExportPages={exportPages} typographyNotice={<TypographyExportNotice session={typography} count={document.dialogues?.filter(text => text.visible).length ?? 0} />} onClose={() => setExportOpen(false)} width={document.width} height={document.height} busy={busy || running} onExport={kind => { setExportFormat(kind); setExportOpen(false); download(kind); }} />}
   </div></TooltipProvider>;
 }

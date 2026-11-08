@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Moon, Sun, X } from 'lucide-react';
+import { Download, X } from 'lucide-react';
 import type { Api, DetectionMode } from '../api';
 
 const categories = ['Translate', 'General', 'Editing', 'Text', 'About'] as const;
 type Category = typeof categories[number];
 export type Density = 'Balanced' | 'Compact' | 'Comfortable';
-export type Theme = 'light' | 'dark';
 export type TranslationSettings = { configured: boolean; model: string; style: string };
 
 export function ModalFrame({ title, onClose, children, className = '' }: { title: string; onClose: () => void; children: ReactNode; className?: string }) {
@@ -30,16 +29,12 @@ export function ModalFrame({ title, onClose, children, className = '' }: { title
   return createPortal(<div className="studio-modal-backdrop" onPointerDown={event => { if (event.target === event.currentTarget) onClose(); }}><div className={`studio-modal ${className}`} ref={modal} role="dialog" aria-modal="true" aria-label={title}><div className="studio-modal-heading"><h2>{title}</h2><button aria-label={`Close ${title}`} onClick={onClose}><X size={18} /></button></div>{children}</div></div>, window.document.body);
 }
 
-export function PreferencesDialog(props: { api: Api | null; onClose: () => void; theme: Theme; onTheme: (value: Theme) => void; needsGeminiKey?: boolean; density: Density; onDensity: (value: Density) => void; exportFormat: 'png' | 'jpeg'; onExportFormat: (value: 'png' | 'jpeg') => void; provider: string; onProvider: (value: string) => void; detectionMode: DetectionMode; onDetectionMode: (mode: DetectionMode) => void; textMode: 'clean' | 'overlay'; onTextMode?: (mode: 'clean' | 'overlay') => void; busy: boolean; onReset: () => void }) {
+export function PreferencesDialog(props: { api: Api | null; onClose: () => void; needsGeminiKey?: boolean; density: Density; onDensity: (value: Density) => void; exportFormat: 'png' | 'jpeg'; onExportFormat: (value: 'png' | 'jpeg') => void; provider: string; onProvider: (value: string) => void; detectionMode: DetectionMode; onDetectionMode: (mode: DetectionMode) => void; textMode: 'clean' | 'overlay'; onTextMode?: (mode: 'clean' | 'overlay') => void; busy: boolean; onReset: () => void }) {
   const [category, setCategory] = useState<Category>('Translate');
   return <ModalFrame title="Settings" onClose={props.onClose} className="preferences-dialog"><div className="preferences-layout"><nav aria-label="Settings categories">{categories.map(name => <button key={name} aria-current={name === category ? 'page' : undefined} onClick={() => setCategory(name)}>{name}</button>)}</nav><div className="preferences-content">
     {category === 'Translate' && (props.api ? <GeminiSettings api={props.api} busy={props.busy} needsKey={props.needsGeminiKey} /> : <p>Connect to the local engine to configure Gemini.</p>)}
     {category === 'General' && <section className="preference-group">
       <h3>Appearance</h3>
-      <div className="theme-options" role="group" aria-label="Appearance">
-        <button aria-pressed={props.theme === 'light'} onClick={() => props.onTheme('light')}><Sun size={15} /> Paper White</button>
-        <button aria-pressed={props.theme === 'dark'} onClick={() => props.onTheme('dark')}><Moon size={15} /> Dark</button>
-      </div>
       <label>Interface density<select value={props.density} onChange={e => props.onDensity(e.target.value as Density)}><option>Balanced</option><option>Compact</option><option>Comfortable</option></select></label><button onClick={props.onReset}>Reset workspace layout</button><p>Display scaling: {Math.round(window.devicePixelRatio*100)}%</p>
     </section>}
     {category === 'Editing' && <section className="preference-group">
