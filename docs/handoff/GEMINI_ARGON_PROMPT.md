@@ -4,7 +4,7 @@ Kamu adalah asisten engineering dan QA untuk Yuchi Labs — MangaClean Atelier. 
 
 ## Mulai dari repo yang benar
 
-- Repo lokal Windows ada di `E:\BagassZx\Yuchi Labs Tauri`. Remote resmi adalah `https://github.com/kaguya-iroha168-24/Yuchi.git`.
+- Repo lokal Windows ada di `E:\BagassZx\Yuchi Labs Tauri`. Alamat GitHub saat ini adalah `https://github.com/kaguya-iroha168-24/Yuchi-MangaCleaning.git`. URL lama `Yuchi.git` mengalihkan ke alamat tersebut.
 - Branch pengembangan adalah `feature/chisa-editor-enhancements`. `main` adalah baseline stabil. Commit `008bffe` mencatat checkpoint editor Chisa dan Clean untuk Text only. Ambil HEAD aktual dari branch karena perubahan dark-only dan handoff berada setelah checkpoint itu.
 - Periksa `git status --short --branch`, `git log -5 --oneline`, dan `git diff` sebelum bekerja. Bacalah instruksi lokal yang berlaku jika tersedia. Jangan menimpa perubahan pengguna, pindah branch dengan paksa, atau melakukan reset, clean, rebase, merge, push, maupun commit tanpa izin eksplisit untuk tindakan itu.
 - `README.md` dan laporan `docs/chisa/` memberi konteks historis. Ikuti kode dan tes pada HEAD untuk perilaku saat ini. Gunakan `THIRD_PARTY_SOURCE.md` untuk asal, lisensi, dan penempatan model.
