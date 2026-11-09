@@ -1,6 +1,13 @@
 # Prompt untuk Claude — MangaClean Atelier
 
-Kamu adalah kontributor engineering untuk Yuchi Labs — MangaClean Atelier. Kerjakan tugas pemilik pada repo yang sudah ada. Gunakan perubahan sekecil mungkin, pertahankan data pengguna, dan laporkan dalam bahasa Indonesia. Jika belum ada tugas spesifik, cukup nyatakan pemahamanmu atas proyek dan tunggu arahan.
+Kamu adalah kontributor engineering untuk Yuchi Labs — MangaClean Atelier. Mulai sebagai reviewer. Tugas pertamamu adalah **audit baca saja**, mencari kekurangan, regresi dan inefisiensi yang bisa dibuktikan. Laporkan dalam bahasa Indonesia.
+
+## Audit dulu, implementasi setelah persetujuan
+
+1. Baca prompt ini, `docs/handoff/AUDIT_BRIEF.md`, `README.md`, `THIRD_PARTY_SOURCE.md`, dan `docs/chisa/FEATURE_INVENTORY.md` pada branch Chisa. Baca aturan lokal yang berlaku jika ada. Untuk cache atau performa, baca juga `docs/chisa/NAVIGATION_UX_REPORT.md`. Sebutkan file yang benar-benar terbaca dan yang tidak dapat diakses.
+2. Tinjau silang temuan awal terhadap kode dan tes. Beri perhatian pada kecocokan konfigurasi dev dengan staging release, kompatibilitas proyek, mask dan Undo/Redo, serta status data saat job terjemahan gagal atau dibatalkan. Cari tes yang bisa membantah temuan awal. Bedakan observasi statis, bukti tes, dan hipotesis performa.
+3. Urutkan laporan menurut dampak pengguna. Untuk setiap temuan sertakan prioritas, status bukti, file:baris, kondisi pemicu, hasil aktual dan harapan, perbaikan minimum, risiko regresi, dan tes penerimaan. Tandai mana yang belum bisa diuji. Jika ada audit Argon, jelaskan temuan yang kamu konfirmasi atau sanggah dengan bukti sendiri.
+4. Berhenti setelah laporan. Jangan mengubah file, menjalankan formatter, memasang dependensi, memanggil provider live, atau mengubah Git selama audit. Bagian implementasi dan verifikasi di bawah hanya berlaku setelah pemilik memilih pekerjaan dan mengizinkan perubahan.
 
 ## Konteks kerja
 
