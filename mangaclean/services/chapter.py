@@ -93,20 +93,29 @@ class Chapter:
         self._persisted_stamp=stamp
 
     def decode(self, identifier):
+        if not hasattr(self, '_doc_cache'): self._doc_cache = {}
+        if identifier in self._doc_cache: return self._doc_cache[identifier]
         page=self.row(identifier);data=load_project(self.folder/(identifier+'.mangaclean'))
         if data['region_graph'].page_id!=identifier:raise ValueError('Page package identity mismatch.')
         source=data['source']
-        return self.document_type(source=source,working=data['clean'] if data['clean'] is not None else source.copy(),
+        doc = self.document_type(source=source,working=data['clean'] if data['clean'] is not None else source.copy(),
             source_name=page['name'],mask=data['mask'],manual_mask=data['manual_mask'],bubbles=data['bubbles'],
             dialogues=data['dialogues'],region_graph=data['region_graph'],active_text_id=data['active_text_id'],
             detection_runs=data['detection_runs'],dirty=page['dirty'],revision=page['revision'],saved_path=page.get('savedPath'),
             composition=data['composition'])
+        self._doc_cache[identifier] = doc
+        return doc
 
     def activate(self, store, identifier, flush=True):
         self.row(identifier)
         if identifier==self.active and store.document is not None:return
         if flush:self.flush(store)
-        doc=self.decode(identifier);histories={}
+        if not hasattr(self, '_doc_cache'): self._doc_cache = {}
+        if store.document is not None and self.active is not None:
+            self._doc_cache[self.active] = store.document
+        doc=self._doc_cache.get(identifier) or self.decode(identifier)
+        self._doc_cache[identifier] = doc
+        histories={}
         for key in ('undo','redo'):
             histories[key]=[]
             for name in self.row(identifier)[key]:
@@ -184,6 +193,8 @@ class Chapter:
                 row=chapter._page(doc);row['dirty']=False
                 temporary.replace(chapter.folder/(page['id']+'.mangaclean'))
                 chapter.pages.append(row)
+                if not hasattr(chapter, '_doc_cache'): chapter._doc_cache = {}
+                chapter._doc_cache[page['id']] = doc
         # Upload staging paths are transient, not proof of a persisted user copy.
         chapter.id=manifest['id'];chapter.saved_path=None
         chapter.initial_active=manifest['active']

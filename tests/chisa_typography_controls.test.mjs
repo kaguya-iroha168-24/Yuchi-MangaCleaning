@@ -202,5 +202,21 @@ test('actual Inspector buttons route case, Shift nudges and centering to selecte
     context.window={EyeDropper:class{async open(){throw {name:'AbortError'};}}};
     const count=h.commits.length;await pickButton().props.onClick();assert.equal(h.commits.length,count,'cancelling must not edit color');
     context.window={};assert.equal(pickButton().props.disabled,true,'unavailable native API must not look functional');
+    const emptyTree=component.namespace.TypographyControls({api:null,session:h.session,selected:null,disabled:false,onCreate(){assert.fail('must not auto-create dialogue');},onDelete(){assert.fail('must not delete');},sourceControls:null});
+    const emptyNodes=nodes(emptyTree);
+    const fieldsBox=emptyNodes.find(n=>typeof n.props?.className==='string'&&n.props.className.includes('typography-fields'));
+    assert.ok(fieldsBox,'Typography controls container must remain visible when no Dialogue is selected');
+    assert.match(fieldsBox.props.className,/\bis-disabled\b/);
+    assert.equal(fieldsBox.props['aria-disabled'],true);
+    const emptyButtons=emptyNodes.filter(n=>n.type==='button');
+    assert.ok(emptyButtons.length>=15,'all typography buttons must be rendered when no Dialogue is selected');
+    for(const btn of emptyButtons)assert.equal(btn.props.disabled,true,`button ${btn.props['aria-label']||btn.props.children} must be disabled when no Dialogue is selected`);
+    for(const numNode of emptyNodes.filter(n=>n.type?.name==='NativeNumber'))assert.equal(numNode.props.disabled,true,`NativeNumber ${numNode.props.label} must be disabled`);
+    for(const colNode of emptyNodes.filter(n=>n.type?.name==='TextColor'))assert.equal(colNode.props.disabled,true,`TextColor ${colNode.props.label||'Text color'} must be disabled`);
+    const commitsBefore=h.commits.length;
+    emptyButtons.find(n=>n.props['aria-label']==='Uppercase dialogue').props.onClick();
+    emptyButtons.find(n=>n.props['aria-label']==='Nudge dialogue right').props.onClick({shiftKey:false});
+    await h.session.flush();
+    assert.equal(h.commits.length,commitsBefore,'disabled controls with no selected Dialogue must not commit or mutate');
   }finally{h.session.dispose();}
 });

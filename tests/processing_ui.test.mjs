@@ -38,3 +38,19 @@ test('terminal automatic jobs refresh retained page pixels even after cancellati
   assert.equal(api.refreshJobImages({type:'detect-bubbles',status:'done'}),false);
   assert.equal(api.refreshJobImages({type:'process',status:'running'}),false);
 });
+test('textCleanHint distinguishes Cleaned / Working checkbox from Artwork in Editing and export and Text treatment',()=>{
+  assert.equal(typeof api.textCleanHint,'function');
+  assert.equal(api.textCleanHint({showWorking:true,textMode:'clean',artwork:'working',artworkLocked:false}),'');
+  assert.equal(api.textCleanHint({showWorking:false,textMode:'clean',artwork:'working'}),'To clean text, enable the Layers → Cleaned / Working checkbox.');
+  assert.equal(api.textCleanHint({showWorking:true,textMode:'clean',artwork:'original'}),'To clean text, set Layers → Artwork in Editing and export to Cleaned / Working.');
+  assert.equal(api.textCleanHint({showWorking:true,textMode:'overlay',artwork:'working'}),'To clean text, choose Clean in Settings → Editing → Text treatment.');
+  assert.equal(api.textCleanHint({showWorking:false,textMode:'clean',artwork:'hidden'}),'To clean text, set Layers → Artwork in Editing and export to Cleaned / Working and enable the Layers → Cleaned / Working checkbox.');
+  assert.equal(api.textCleanHint({showWorking:false,textMode:'overlay',artwork:'original',artworkLocked:true}),'To clean text, choose Clean in Settings → Editing → Text treatment, set Layers → Artwork in Editing and export to Cleaned / Working, enable the Layers → Cleaned / Working checkbox, and uncheck Layers → Lock working artwork.');
+});
+test('Text only Clean requires visible Cleaned / Working layer even when a text preview mask exists',()=>{
+  const app=fs.readFileSync(new URL('../src/App.tsx',import.meta.url),'utf8');
+  assert.match(app,/const showsWorkingArtwork = showWorking && composition\.text_mode !== 'overlay' && \(composition\.artwork \?\? 'working'\) === 'working';/);
+  assert.match(app,/const validTextPreview = !preview\?\.textRegionId \|\| \(showTextClean && showsWorkingArtwork && preview\.textRegionId === activeText\?\.id\);/);
+  assert.match(app,/const canClean = canPrepareClean && validTextPreview && Boolean\(preview \? preview\.maskPixels : cleanTarget\);/);
+  assert.match(app,/cleanHint=\{headerCleanHint\}/);
+});

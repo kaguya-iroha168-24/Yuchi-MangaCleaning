@@ -8,7 +8,7 @@ from hashlib import sha256
 import json
 import os
 import re
-from fastapi import HTTPException, Request, UploadFile
+from fastapi import HTTPException, Request, UploadFile, Response
 from pydantic import BaseModel, Field
 from mangaclean.services.chapter import Chapter, natural_key
 from mangaclean.services.export_preflight import write_verified_image
@@ -80,8 +80,10 @@ def register(namespace):
                         source=m.read_image(path)
                         graph=m.RegionGraph.for_legacy(source,name)
                         if graph.page_id in reserved:graph.page_id=uuid4().hex
-                        doc=m.Document(source,source,name,m.np.zeros(source.shape[:2],m.np.uint8),region_graph=graph,dirty=True)
+                        doc=m.Document(source,source.copy(),name,m.np.zeros(source.shape[:2],m.np.uint8),region_graph=graph,dirty=True)
                         staged.add(doc,raw=True)
+                        if not hasattr(chapter, "_doc_cache"): chapter._doc_cache = {}
+                        chapter._doc_cache[graph.page_id] = doc
                     if existing:
                         linked=[]
                         try:
@@ -99,6 +101,47 @@ def register(namespace):
         except (ValueError,OSError,KeyError) as error:raise HTTPException(422,str(error)) from error
         finally:
             for _,path in paths:path.unlink(missing_ok=True)
+
+    @app.get('/v1/pages/{identifier}/image/{kind}')
+    def page_image(identifier: str, kind: str, request: Request):
+        m.require_auth(request.headers.get('authorization'))
+        with store.lock:
+            chapter = getattr(store, 'chapter', None)
+            if not chapter or not any(p['id'] == identifier for p in chapter.pages):
+                raise HTTPException(404, 'Page not found.')
+            if chapter.active == identifier and store.document is not None:
+                doc = store.document
+            else:
+                if not hasattr(chapter, '_doc_cache'): chapter._doc_cache = {}
+                doc = chapter._doc_cache.get(identifier) or chapter.decode(identifier)
+                chapter._doc_cache[identifier] = doc
+            if kind == 'original':
+                if getattr(doc, '_encoded_source_id', None) == id(doc.source) and hasattr(doc, '_encoded_source'):
+                    payload = doc._encoded_source
+                else:
+                    payload = m.encode_png(doc.source)
+                    doc._encoded_source = payload
+                    doc._encoded_source_id = id(doc.source)
+            elif kind == 'working':
+                artwork = m.page_artwork(doc)
+                if artwork is doc.source or (doc.revision == 0 and not getattr(doc, 'composition', None)):
+                    if getattr(doc, '_encoded_source_id', None) == id(doc.source) and hasattr(doc, '_encoded_source'):
+                        payload = doc._encoded_source
+                    else:
+                        payload = m.encode_png(doc.source)
+                        doc._encoded_source = payload
+                        doc._encoded_source_id = id(doc.source)
+                else:
+                    working_key = (doc.revision, id(doc.working), str(getattr(doc, 'composition', None)))
+                    if getattr(doc, '_encoded_working_key', None) == working_key and hasattr(doc, '_encoded_working'):
+                        payload = doc._encoded_working
+                    else:
+                        payload = m.encode_png(artwork)
+                        doc._encoded_working = payload
+                        doc._encoded_working_key = working_key
+            else:
+                raise HTTPException(400, 'Invalid image kind.')
+            return Response(payload, media_type='image/png', headers={'Cache-Control': 'no-store'})
 
     @app.post('/v1/pages/{identifier}/activate')
     def activate_page(identifier: str,request: Request):

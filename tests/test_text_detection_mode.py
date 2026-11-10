@@ -120,3 +120,38 @@ class TextDetectionMode(unittest.TestCase):
             self.assertEqual((layer.source_region_id, layer.text), (selected.id, 'Kanan'))
         finally:
             self.post('/v1/translation/settings', {'clear': True})
+
+    def test_real_ogkalu_scan_and_save_reload_roundtrip(self):
+        from io import BytesIO
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from mangaclean.services.project_io import load_project, save_project
+
+        self.detect.stop()
+        source = np.full((320, 320, 3), 255, np.uint8)
+        cv2.ellipse(source, (160, 160), (110, 80), 0, 0, 360, (0, 0, 0), 3)
+        cv2.putText(source, 'HELLO', (95, 145), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 3)
+        cv2.putText(source, 'WORLD', (95, 190), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 3)
+        _, png = cv2.imencode('.png', source)
+        opened = self.client.post('/v1/open?discard=true', headers=self.headers,
+                                  files={'file': ('real-ogkalu.png', BytesIO(png.tobytes()), 'image/png')})
+        self.assertEqual(opened.status_code, 200, opened.text)
+        self.post('/v1/detect-text')
+        self.wait()
+        doc = main.store.document
+        self.assertGreaterEqual(len(doc.region_graph.text_regions), 1)
+        region = doc.region_graph.text_regions[0]
+        self.assertEqual(region.provenance['origin'], 'automatic_text_detection')
+        self.assertEqual(region.provenance['detector'], 'ogkalu_v4_s_int8')
+        self.assertEqual(region.provenance['detected_rect'], list(region.rect))
+        self.assertEqual(region.provenance['layout_rect'], list(region.rect))
+        self.assertGreaterEqual(region.provenance['confidence'], .30)
+        with TemporaryDirectory(dir=main.CACHE) as folder:
+            target = Path(folder) / 'ogkalu-roundtrip.mangaclean'
+            save_project(target, doc.snapshot())
+            loaded = load_project(target)
+            self.assertEqual(loaded['region_graph'].to_dict(), doc.region_graph.to_dict())
+            reopened = self.client.post('/v1/open?discard=true', headers=self.headers,
+                                        files={'file': ('ogkalu-roundtrip.mangaclean', BytesIO(target.read_bytes()), 'application/octet-stream')})
+            self.assertEqual(reopened.status_code, 200, reopened.text)
+            self.assertEqual(main.store.document.region_graph.to_dict(), doc.region_graph.to_dict())

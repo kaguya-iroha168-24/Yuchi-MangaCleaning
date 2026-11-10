@@ -24,7 +24,7 @@ export function StudioHeader(props: {
   processing?: boolean; tools?: ReactNode; document: DocumentState | null; busy: boolean;
   onOpen: () => void; onOpenFolder?: () => void; onSave: () => void; onExport: () => void; onUndo: () => void; onRedo: () => void; onSettings: () => void; onTranslate?: (scope: 'page' | 'chapter') => void;
   onProcess: () => void; onToggleAll: () => void; detectAll: boolean; pageCount: number; overlayMode: boolean; detectionMode: 'bubble' | 'text';
-  onClean: () => void; canScan: boolean; canClean: boolean;
+  onClean: () => void; canScan: boolean; canClean: boolean; cleanHint?: string;
   pages?: { number: number; previous?: () => void; next?: () => void };
   view?: ReactNode;
 }) {
@@ -46,7 +46,7 @@ export function StudioHeader(props: {
         <button disabled={!props.canScan || props.pageCount < 2} aria-pressed={allPages} onClick={props.onToggleAll} title="Apply detection and Translate to all pages">All Pages</button>
       </div>
       <ChromeButton label={allPages ? `Translate all ${props.pageCount} pages` : 'Translate the current page'} disabled={!props.onTranslate || props.busy || props.processing} onClick={() => props.onTranslate?.(allPages ? 'chapter' : 'page')}><Languages size={16} /></ChromeButton>
-      <button disabled={!props.canClean} onClick={props.onClean} aria-label="Clean Selected" title="Clean Selected">Clean</button>
+      <button disabled={!props.canClean} onClick={props.onClean} aria-label="Clean Selected" title={props.cleanHint || 'Clean Selected'}>Clean</button>
     </div>
     <div className="header-document-actions">
       {props.view}
@@ -62,12 +62,12 @@ export function StudioHeader(props: {
   </header>;
 }
 
-export function ToolRail({ tool, onTool, ready, hasPreview, busy, canPreview, onPreview, onHealing }: { tool: StudioTool; onTool: (tool: StudioTool) => void; ready: boolean; hasPreview: boolean; busy: boolean; canPreview: boolean; onPreview: () => void; onHealing: () => void }) {
+export function ToolRail({ tool, onTool, ready, hasPreview, busy, canPreview, cleanHint, onPreview, onHealing }: { tool: StudioTool; onTool: (tool: StudioTool) => void; ready: boolean; hasPreview: boolean; busy: boolean; canPreview: boolean; cleanHint?: string; onPreview: () => void; onHealing: () => void }) {
   return <nav className="tool-rail top-tools" aria-label="Editing tools">
     <ChromeButton label="Box Draw / Select text area manually (B)" active={tool === 'manual'} disabled={!ready || busy} onClick={() => onTool('manual')}><span className="box-tool-icon" /></ChromeButton>
     <ChromeButton label="Add text (T)" active={tool === 'text'} disabled={!ready || busy} onClick={() => onTool('text')}><Type size={16} /></ChromeButton>
     <details className="tool-overflow" onKeyDown={event=>{if(event.key==='Escape'){event.currentTarget.open=false;event.currentTarget.querySelector<HTMLElement>('summary')?.focus();}}}><summary aria-label="Mask and healing tools" title="Mask and healing tools"><Paintbrush size={16} /></summary><div onClick={event=>event.currentTarget.closest('details')?.removeAttribute('open')}>
-      <button disabled={!ready || busy || !canPreview} onClick={onPreview}>Preview Mask</button>
+      <button disabled={!ready || busy || !canPreview} title={cleanHint || undefined} onClick={onPreview}>Preview Mask</button>
       <button disabled={!hasPreview || busy} aria-pressed={tool.startsWith('mask-')} onClick={() => onTool('mask-add')}>Correct prepared mask (M)</button>
       <button disabled={!ready || busy} onClick={onHealing}>Open Healing panel</button>
     </div></details>

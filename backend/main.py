@@ -218,6 +218,7 @@ def shutdown(request: Request):
     server.should_exit = True
     close_typesetter(wait=False)
     close_ocr(wait=False)
+    close_detector(wait=False)
     return {"ok": True}
 
 
@@ -271,8 +272,30 @@ def image(kind: str, request: Request):
     require_auth(request.headers.get("authorization"))
     with store.lock:
         doc = store.require()
-        if kind == "original": payload = encode_png(doc.source)
-        elif kind == "working": payload = encode_png(page_artwork(doc))
+        if kind == "original":
+            if getattr(doc, "_encoded_source_id", None) == id(doc.source) and hasattr(doc, "_encoded_source"):
+                payload = doc._encoded_source
+            else:
+                payload = encode_png(doc.source)
+                doc._encoded_source = payload
+                doc._encoded_source_id = id(doc.source)
+        elif kind == "working":
+            artwork = page_artwork(doc)
+            if artwork is doc.source:
+                if getattr(doc, "_encoded_source_id", None) == id(doc.source) and hasattr(doc, "_encoded_source"):
+                    payload = doc._encoded_source
+                else:
+                    payload = encode_png(doc.source)
+                    doc._encoded_source = payload
+                    doc._encoded_source_id = id(doc.source)
+            else:
+                working_key = (doc.revision, id(doc.working), str(getattr(doc, "composition", None)))
+                if getattr(doc, "_encoded_working_key", None) == working_key and hasattr(doc, "_encoded_working"):
+                    payload = doc._encoded_working
+                else:
+                    payload = encode_png(artwork)
+                    doc._encoded_working = payload
+                    doc._encoded_working_key = working_key
         elif kind == "composite":
             try: payload = encode_png(composite_page(doc))
             except (ValueError, TypesettingUnavailable) as error: raise HTTPException(422, str(error)) from error
@@ -384,10 +407,10 @@ async def progress(socket: WebSocket):
     await socket.accept(subprotocol="yuchi")
     import asyncio
     try:
-        while True:
+        while not detector_startup_cancel.is_set() and not (server and server.should_exit):
             with store.lock: current = dict(store.job) if store.job else None
             await socket.send_json(current)
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.04)
     except WebSocketDisconnect:
         pass
 
@@ -1198,6 +1221,37 @@ def main() -> None:
     global server
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port, access_log=False))
     threading.Thread(target=warm_detector, args=(detector_startup_cancel,), daemon=True).start()
+    if os.name == "nt" and os.environ.get("YUCHI_PARENT_PID", "").isdigit():
+        def _stop_owned_runtime() -> None:
+            detector_startup_cancel.set(); store.cancel.set()
+            if server is not None: server.should_exit = True
+            close_typesetter(wait=False); close_ocr(wait=False); close_detector(wait=False)
+        def _watch_parent(pid: int, expected_ctime: int | None) -> None:
+            import ctypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            h = k32.OpenProcess(0x00101000, False, pid)
+            if not h:
+                if expected_ctime is not None: _stop_owned_runtime()
+                return
+            try:
+                ctime, etime, ktime, utime = ctypes.c_uint64(), ctypes.c_uint64(), ctypes.c_uint64(), ctypes.c_uint64()
+                if not k32.GetProcessTimes(h, ctypes.byref(ctime), ctypes.byref(etime), ctypes.byref(ktime), ctypes.byref(utime)):
+                    return
+                if expected_ctime is not None and ctime.value != expected_ctime:
+                    _stop_owned_runtime()
+                    return
+                self_ctime = ctypes.c_uint64()
+                if k32.GetProcessTimes(k32.GetCurrentProcess(), ctypes.byref(self_ctime), ctypes.byref(etime), ctypes.byref(ktime), ctypes.byref(utime)) and ctime.value > self_ctime.value:
+                    _stop_owned_runtime()
+                    return
+                while not detector_startup_cancel.is_set():
+                    if k32.WaitForSingleObject(h, 500) != 0x00000102:
+                        _stop_owned_runtime()
+                        return
+            finally: k32.CloseHandle(h)
+        raw_ctime = os.environ.get("YUCHI_PARENT_CREATION_FILETIME", "")
+        exp_ctime = int(raw_ctime) if raw_ctime.isdigit() else None
+        threading.Thread(target=_watch_parent, args=(int(os.environ["YUCHI_PARENT_PID"]), exp_ctime), daemon=True).start()
     try: server.run()
     finally:
         detector_startup_cancel.set()

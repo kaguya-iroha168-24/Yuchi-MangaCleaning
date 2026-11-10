@@ -140,6 +140,11 @@ export class Api {
     return URL.createObjectURL(await response.blob());
   }
 
+  async pageImage(pageId: string, kind: string): Promise<string> {
+    const response = await this.send(`/v1/pages/${pageId}/image/${kind}`);
+    return URL.createObjectURL(await response.blob());
+  }
+
   async download(kind: string): Promise<void> {
     const response = await this.send(`/v1/export/${kind}`);
     const header = response.headers.get('content-disposition') ?? '';

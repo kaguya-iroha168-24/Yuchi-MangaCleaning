@@ -1,6 +1,6 @@
-import type { TextRegion } from '../api';
+import type { Bubble, TextRegion } from '../api';
 
-export type PageFrame = { pageId: string; originalUrl: string; workingUrl: string; original: HTMLImageElement; working: HTMLImageElement; cacheKey?: string; textRegions?: TextRegion[] };
+export type PageFrame = { pageId: string; originalUrl: string; workingUrl: string; original: HTMLImageElement; working: HTMLImageElement; cacheKey?: string; textRegions?: TextRegion[]; bubbles?: Bubble[] };
 
 async function decodeImage(url: string): Promise<HTMLImageElement> {
   const image = new Image();
@@ -21,11 +21,18 @@ export class PageFrames {
   private generation = 0;
   private current: PageFrame | null = null;
   private recent: PageFrame[] = [];
-  constructor(private decode = decodeImage, private release = (url: string) => URL.revokeObjectURL(url)) {}
+  constructor(private decode = decodeImage, private release = (url: string) => URL.revokeObjectURL(url), private maxPixels = CACHE_PIXELS, private maxPages = CACHE_PAGES) {}
   get version() { return this.generation; }
   invalidate() { this.generation++; }
   peek(pageId: string, cacheKey: string) {
     return this.recent.find(frame => frame.pageId === pageId && frame.cacheKey === cacheKey) ?? null;
+  }
+  rememberDetections(pageId: string, cacheKey: string, bubbles: Bubble[], regions?: TextRegion[], previousKey = cacheKey) {
+    const frame = this.current;
+    if (frame?.pageId !== pageId || frame.cacheKey !== previousKey) return;
+    frame.cacheKey = cacheKey;
+    frame.bubbles = bubbles;
+    if (regions) frame.textRegions = regions;
   }
   rememberTextRegions(pageId: string, cacheKey: string, regions: TextRegion[], previousKey = cacheKey) {
     const frame = this.current;
@@ -58,12 +65,49 @@ export class PageFrames {
     }
     if (!outgoing || outgoing === frame) return;
     if (outgoing.pageId !== frame.pageId && outgoing.cacheKey && frame.cacheKey &&
-        framePixels(outgoing) <= CACHE_PIXELS) {
+        framePixels(outgoing) <= this.maxPixels) {
       this.recent.push(outgoing);
-      while (this.recent.length > CACHE_PAGES || this.recent.reduce((total, cached) => total + framePixels(cached), 0) > CACHE_PIXELS) {
+      while (this.recent.length > this.maxPages || this.recent.reduce((total, cached) => total + framePixels(cached), 0) > this.maxPixels) {
         this.releaseFrame(this.recent.shift()!);
       }
     } else this.releaseFrame(outgoing);
+  }
+  async preload(client: { pageImage?(id: string, kind: string): Promise<string>; image(kind: string): Promise<string> }, pageId: string, cacheKey?: string): Promise<boolean> {
+    if (this.current?.pageId === pageId && this.current.cacheKey === cacheKey) return true;
+    if (this.peek(pageId, cacheKey ?? '')) return true;
+    if (!client.pageImage) return false;
+    let originalUrl: string | undefined;
+    let workingUrl: string | undefined;
+    let accepted = false;
+    try {
+      [originalUrl, workingUrl] = await Promise.all([
+        client.pageImage(pageId, 'original'),
+        client.pageImage(pageId, 'working'),
+      ]);
+      const [original, working] = await Promise.all([
+        this.decode(originalUrl),
+        this.decode(workingUrl),
+      ]);
+      const frame: PageFrame = { pageId, originalUrl, workingUrl, original, working, cacheKey };
+      const index = this.recent.findIndex(cached => cached.pageId === pageId);
+      if (index !== -1) {
+        const [cached] = this.recent.splice(index, 1);
+        if (cached !== frame) this.releaseFrame(cached);
+      }
+      this.recent.push(frame);
+      while (this.recent.length > this.maxPages || this.recent.reduce((total, cached) => total + framePixels(cached), 0) > this.maxPixels) {
+        this.releaseFrame(this.recent.shift()!);
+      }
+      accepted = true;
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (!accepted) {
+        if (originalUrl) this.release(originalUrl);
+        if (workingUrl) this.release(workingUrl);
+      }
+    }
   }
   async loadWorking(client: { image(kind: string): Promise<string> }, pageId: string, publish: (frame: PageFrame) => void, cacheKey?: string): Promise<boolean> {
     const previous = this.current;

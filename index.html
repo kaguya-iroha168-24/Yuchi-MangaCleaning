@@ -6,6 +6,27 @@
     <meta name="color-scheme" content="dark" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23151619'/%3E%3Ccircle cx='32' cy='32' r='20' fill='none' stroke='%23E63946' stroke-width='6'/%3E%3C/svg%3E" />
     <title>Yuchi Labs — MangaClean Atelier</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #151619; color: #eceef2; font-family: Inter, "Segoe UI Variable", "Segoe UI", sans-serif; }
+      .boot-shell { height: 100vh; display: flex; flex-direction: column; background: #151619; color: #eceef2; user-select: none; }
+      .boot-header { height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; background: #1b1d22; border-bottom: 1px solid #262930; font-size: 13px; }
+      .boot-brand { display: flex; align-items: center; gap: 8px; }
+      .boot-brand strong { display: block; color: #eceef2; font-size: 13px; }
+      .boot-brand small { display: block; color: #8e95a5; font-size: 11px; }
+      .boot-status { color: #8e95a5; font-size: 12px; }
+      .boot-stage { flex: 1; display: grid; place-items: center; color: #8e95a5; font-size: 13px; }
+    </style>
   </head>
-  <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>
+  <body>
+    <div id="root">
+      <div class="boot-shell" data-boot-shell="true">
+        <header class="boot-header">
+          <div class="boot-brand"><div><strong>YUCHI LABS</strong><small>MANGACLEAN ATELIER</small></div></div>
+          <span class="boot-status">Starting local studio…</span>
+        </header>
+        <div class="boot-stage">Preparing workspace…</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

@@ -78,6 +78,7 @@ function TextColor({ value, disabled, onValue, onCommit, label = 'Text color' }:
 }
 
 const sizePresetsKey = 'yuchi-tauri-font-size-presets';
+const emptyDialogue: Dialogue = { id: '', text: '', bubble_id: null, source_region_id: null, x: 0, y: 0, width: 160, height: 80, family: 'Arial', size: 22, weight: 400, minimum_size: 12, color: '#111111', alignment: 'center', visible: true, auto_fit: true, padding: 8, style: {} };
 
 export function TypographyControls({ api, session, selected, disabled: unavailable, onDelete, sourceControls, sourceOptions }: { api: Api | null; session: TypographySession; selected: Dialogue | null; disabled: boolean; onCreate: () => void; onDelete: (id: string) => void; sourceControls: React.ReactNode; sourceOptions?: React.ReactNode }) {
   const live = useSyncExternalStore(session.subscribe, session.getSnapshot);
@@ -102,22 +103,22 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
     load();
     return () => { stale = true; unsubscribe(); };
   }, [api]);
-  const text = selected ? live.drafts[selected.id] ?? selected : null;
-  const disabled = unavailable || Boolean(text?.locked);
+  const selectedText = selected ? live.drafts[selected.id] ?? selected : null; const text = selectedText ?? emptyDialogue;
+  const disabled = unavailable || !selectedText || Boolean(selectedText.locked);
   const style = text?.style ?? {};
-  const commit = () => { void session.flush().catch(() => {}); };
-  const change = (patch: Partial<Dialogue>, immediate = false) => { if (text) { setCaseNotice(''); session.edit(text.id, patch); if (immediate) commit(); } };
+  const commit = () => { if (selectedText) void session.flush().catch(() => {}); };
+  const change = (patch: Partial<Dialogue>, immediate = false) => { if (selectedText) { setCaseNotice(''); session.edit(selectedText.id, patch); if (immediate) commit(); } };
   const changeStyle = (patch: DialogueStyle, immediate = false) => {
-    if (!text) return;
+    if (!selectedText) return;
     const current = session.getSnapshot().drafts[text.id] ?? text;
     change({ style: { ...current.style, ...patch } }, immediate);
   };
-  const bumpSize=(delta:number)=>{if(!text)return;const current=session.getSnapshot().drafts[text.id] ?? text;session.edit(text.id,fontSizePatch(current,current.size+delta));commit();};
+  const bumpSize=(delta:number)=>{if(!selectedText)return;const current=session.getSnapshot().drafts[selectedText.id] ?? selectedText;session.edit(selectedText.id,fontSizePatch(current,current.size+delta));commit();};
   const currentFont = fonts.find(font => font.family === text?.family);
   const supportsBold = Boolean((style.italic ? currentFont?.italicWeights : currentFont?.weights)?.includes(700));
-  const layer = text ? live.layers[text.id] : null;
+  const layer = selectedText ? live.layers[selectedText.id] : null;
   const fitText = (preset?: 'manga') => {
-    if (!text) return;
+    if (!selectedText) return;
     const id = text.id;
     setCaseNotice('Checking safe text fit…');
     void session.fitInsideBubble(id, preset).then(notice => {
@@ -127,14 +128,14 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
     });
   };
   return <div className="typography-properties" data-typography-inspector="true">
-    <details className="property-group" open><summary>Translation</summary><div className="property-fields">
+    {Boolean(sourceControls || selectedText || sourceOptions) && <details className="property-group" open><summary>Translation</summary><div className="property-fields">
       {sourceControls}
-      {text && <label>Translation<textarea id="typography-text" aria-label="Typeset dialogue text" maxLength={4000} value={text.text} disabled={disabled} onChange={event => change({ text: event.target.value })} onBlur={commit} /></label>}
-      {sourceOptions}
-    </div></details>
+      {selectedText && <label>Translation<textarea id="typography-text" aria-label="Typeset dialogue text" maxLength={4000} value={text.text} disabled={disabled} onChange={event => change({ text: event.target.value })} onBlur={commit} /></label>}
+      {sourceOptions}</div></details>}
+
     <details className="property-group" open><summary>Typography</summary><div className="property-fields">
     {fontError && <p role="alert" className="warning-note">{fontError}</p>}
-    {text ? <div key={text.id} className="typography-fields">
+    {!selectedText && <p className="section-note">Select a dialogue on Editing Canvas, or draw a box with T. Double-click a dialogue to edit it on the canvas.</p>}<div key={selectedText?.id ?? 'no-dialogue'} className={`typography-fields${selectedText ? '' : ' is-disabled'}`} aria-disabled={disabled}>
       <FontBrowser fonts={fonts} value={text.family} disabled={disabled} onSelect={family => change({ family }, true)} />
       <div className="type-size-row">
         <div className="size-stepper">
@@ -142,14 +143,14 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
           <NativeNumber label="Font size (px)" icon={<Type size={13} />} value={text.size} min={8} max={144} disabled={disabled} onValue={size => change(fontSizePatch(text, size))} onCommit={commit} />
           <button type="button" disabled={disabled || text.size>=144} aria-label="Increase requested font size" title="Increase requested font size" onClick={()=>bumpSize(1)}>+</button>
         </div>
-        <div className="type-presets" role="group" aria-label="Apply font size preset">{sizePresets.map((size, index) => <button key={index} type="button" disabled={disabled || size === null} aria-label={`Size preset ${index + 1}${size === null ? ', empty' : `, ${size} px`}`} title={size === null ? 'Empty preset · save a size in Advanced' : `Apply ${size} px`} aria-pressed={index === sizePresets.indexOf(text.size)} onClick={() => { if (size !== null) change(fontSizePatch(text, size), true); }}>{index + 1}</button>)}</div>
+        <div className="type-presets" role="group" aria-label="Apply font size preset">{sizePresets.map((size, index) => <button key={index} type="button" disabled={disabled || size === null} aria-label={`Size preset ${index + 1}${size === null ? ', empty' : `, ${size} px`}`} title={size === null ? 'Empty preset · save a size in Advanced' : `Apply ${size} px`} aria-pressed={Boolean(selectedText) && index === sizePresets.indexOf(text.size)} onClick={() => { if (size !== null) change(fontSizePatch(text, size), true); }}>{index + 1}</button>)}</div>
       </div>
       <div className="type-format-row">
       <div className="type-quick-actions" role="group" aria-label="Dialogue emphasis and letter case">
       <button type="button" aria-label="Bold text" aria-pressed={text.weight>=600} disabled={disabled || (!supportsBold && text.weight<600)} title={supportsBold ? 'Bold' : 'This family has no available Bold 700 face'} onClick={()=>change({weight:text.weight>=600?400:700},true)}><Bold size={14} aria-hidden="true" /></button>
       <button type="button" aria-label="Italic text" aria-pressed={Boolean(style.italic)} disabled={disabled} title={fonts.find(font => font.family === text.family)?.italicWeights?.length ? 'Italic' : 'Italic uses a licensed installed face when available'} onClick={() => changeStyle({ italic: !style.italic }, true)}><Italic size={14} aria-hidden="true" /></button>
       {(['upper','title','lower'] as const).map((mode,index)=><button key={mode} type="button" disabled={disabled} aria-label={`${['Uppercase','Title case','Lowercase'][index]} dialogue`} title={`${['Uppercase','Title case (each word)','Lowercase'][index]}; Auto Fit may lower this dialogue's minimum to 8 px if needed, with an explicit notice`} onClick={()=>{
-        const action=++caseAction.current,id=text.id;setCaseNotice('Checking case fit…');
+        if(!selectedText)return;const action=++caseAction.current,id=text.id;setCaseNotice('Checking case fit…');
         void session.transformCase(id,mode).then(notice=>{if(caseAction.current===action&&caseTarget.current===id)setCaseNotice(notice??'');}).catch(()=>{if(caseAction.current===action&&caseTarget.current===id)setCaseNotice('Case change was not applied.');});
       }}>{['AA','Aa','aa'][index]}</button>)}</div>
       <div className="type-quick-actions" role="group" aria-label="Text alignment">
@@ -172,8 +173,8 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
       <div className="type-position">
         <span>Position</span>
         <div className="type-quick-actions" role="group" aria-label="Nudge dialogue position">
-          {([['Left',-1,0,ChevronLeft],['Up',0,-1,ChevronUp],['Down',0,1,ChevronDown],['Right',1,0,ChevronRight]] as const).map(([label,dx,dy,Icon])=><button key={label} type="button" disabled={disabled} aria-label={`Nudge dialogue ${label.toLowerCase()}`} title={`${label}: 1 native pixel; Shift: 10 pixels`} onClick={event=>{void session.nudge(text.id,dx*(event.shiftKey?10:1),dy*(event.shiftKey?10:1)).catch(()=>{});}}><Icon size={14} aria-hidden="true" /></button>)}
-          <button type="button" disabled={disabled} aria-label={text.bubble_id?'Center in bubble':'Center in page'} title={text.bubble_id?'Center within the linked bubble':'Center within the page'} onClick={()=>{void session.center(text.id).catch(()=>{});}}><LocateFixed size={14} aria-hidden="true" /></button>
+          {([['Left',-1,0,ChevronLeft],['Up',0,-1,ChevronUp],['Down',0,1,ChevronDown],['Right',1,0,ChevronRight]] as const).map(([label,dx,dy,Icon])=><button key={label} type="button" disabled={disabled} aria-label={`Nudge dialogue ${label.toLowerCase()}`} title={`${label}: 1 native pixel; Shift: 10 pixels`} onClick={event=>{if(!selectedText)return;void session.nudge(text.id,dx*(event.shiftKey?10:1),dy*(event.shiftKey?10:1)).catch(()=>{});}}><Icon size={14} aria-hidden="true" /></button>)}
+          <button type="button" disabled={disabled} aria-label={text.bubble_id?'Center in bubble':'Center in page'} title={text.bubble_id?'Center within the linked bubble':'Center within the page'} onClick={()=>{if(!selectedText)return;void session.center(text.id).catch(()=>{});}}><LocateFixed size={14} aria-hidden="true" /></button>
         </div>
       </div>
       <div className="type-metrics">
@@ -186,11 +187,11 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
         <NativeNumber label="Stroke width (px)" value={style.stroke_width ?? 0} min={0} max={12} disabled={disabled} onValue={stroke_width => changeStyle({ stroke_width })} onCommit={commit} /></div>
         <label>Save requested size ({text.size} px) to slot<select value="" disabled={disabled} onChange={event => {
           const slot = event.target.value;
-          if (slot === '') return;
+          if (slot === '' || !selectedText) return;
           const next = sizePresets.map((size, index) => index === Number(slot) ? text.size : size);
           localStorage.setItem(sizePresetsKey, JSON.stringify(next)); setSizePresets(next);
         }}><option value="" disabled>Choose a slot</option>{sizePresets.map((size, index) => <option key={index} value={index}>Preset {index + 1}{size === null ? '' : ` · replace ${size} px`}</option>)}</select></label>
-      <div className="control-pair"><button disabled={disabled} onClick={() => session.copyStyle(text.id)}>Copy Style</button><button disabled={disabled || !live.copiedStyle} onClick={() => { void session.pasteStyle(text.id).catch(() => {}); }}>Paste Style</button></div>
+      <div className="control-pair"><button disabled={disabled} onClick={() => { if (selectedText) session.copyStyle(text.id); }}>Copy Style</button><button disabled={disabled || !live.copiedStyle} onClick={() => { if (selectedText) void session.pasteStyle(text.id).catch(() => {}); }}>Paste Style</button></div>
       <div className="control-pair"><NativeNumber label="Safe padding (native px)" value={text.padding} min={0} max={512} disabled={disabled} onValue={padding => change({ padding })} onCommit={commit} /><NativeNumber label="Minimum font size" value={text.minimum_size} min={8} max={Math.min(48, text.size)} disabled={disabled} onValue={minimum_size => change({ minimum_size })} onCommit={commit} /></div>
       <div className="control-pair"><NativeNumber integer={false} label="Dialogue X" value={text.x} min={0} max={20000} disabled={disabled} onValue={x => change({ x })} onCommit={commit} /><NativeNumber integer={false} label="Dialogue Y" value={text.y} min={0} max={2000000} disabled={disabled} onValue={y => change({ y })} onCommit={commit} /></div>
       <div className="control-pair"><NativeNumber integer={false} label="Dialogue width" value={text.width} min={1} max={20000} disabled={disabled} onValue={width => change({ width })} onCommit={commit} /><NativeNumber integer={false} label="Dialogue height" value={text.height} min={1} max={2000000} disabled={disabled} onValue={height => change({ height })} onCommit={commit} /></div>
@@ -200,9 +201,10 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
       {text.locked && <p className="section-note">Unlock this dialogue in Layers to edit it.</p>}
       {layer?.warnings.map((warning, index) => <p key={index} className="warning-note" role="status">{warning}</p>)}
       {live.errors[text.id] && <p role="alert" className="warning-note">{live.errors[text.id]}</p>}
-      <button className="studio-action" disabled={disabled} onClick={() => onDelete(text.id)}>Delete text layer</button>
-    </div> : <p className="section-note">Select a dialogue on Editing Canvas, or draw a box with T. Double-click a dialogue to edit it on the canvas.</p>}
+      <button className="studio-action" disabled={disabled} onClick={() => { if (selectedText) onDelete(text.id); }}>Delete text layer</button>
+    </div>
     </div></details>
+
   </div>;
 }
 

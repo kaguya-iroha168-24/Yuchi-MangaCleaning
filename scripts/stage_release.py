@@ -14,6 +14,9 @@ import argparse
 
 ROOT=Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'src-tauri/target/release/yuchi-labs-tauri.exe'
+OGKALU_MODEL=Path('models/ogkalu/detector-v4-s_int8.onnx')
+OGKALU_LICENSE=Path('models/ogkalu/LICENSE.txt')
+OGKALU_SHA256='5fe9e4f576e49d4e7e8b0e029d6d3cdc252abd4694113e1cae120e62c931ea79'
 
 
 def copy_verified(source, destination):
@@ -32,8 +35,10 @@ def stage(resume=None):
     target.mkdir(parents=True,exist_ok=bool(resume))
     app=target/'runtime/app';python=target/'runtime/python'
     app.mkdir(parents=True,exist_ok=bool(resume));python.mkdir(exist_ok=bool(resume))
+    if not (ROOT/OGKALU_MODEL).is_file() or not (ROOT/OGKALU_LICENSE).is_file():
+        raise SystemExit('Missing Ogkalu model or license in models/ogkalu.')
     ignore=shutil.ignore_patterns('__pycache__','*.pyc','.cache')
-    for name in ['backend','mangaclean','configs']:
+    for name in ['backend','mangaclean','configs','models']:
         shutil.copytree(ROOT/name,app/name,ignore=ignore,dirs_exist_ok=True,copy_function=copy_verified)
     (app/'scripts').mkdir(exist_ok=True)
     for name in ['yuchi_inference.py','ocr_inference.py','typesetting_worker.py','windows_ocr.ps1']:
@@ -56,7 +61,12 @@ def stage(resume=None):
               'ocr_and_renderer_python':ocr['python'],'japanese_model':ocr['model_directory']}
     for path in external.values():
         if not Path(path).exists():raise SystemExit('Missing local prerequisite: '+path)
-    result=subprocess.run([str(python/'python.exe'),'-B','-I','-c','import fastapi,cv2,numpy,pydantic,sys; print(sys.prefix)'],
+    if not (app/OGKALU_MODEL).is_file() or not (app/OGKALU_LICENSE).is_file():
+        raise SystemExit('Staged Ogkalu model or Apache-2.0 license is missing.')
+    with (app/OGKALU_MODEL).open('rb') as stream:
+        if hashlib.file_digest(stream,'sha256').hexdigest()!=OGKALU_SHA256:
+            raise SystemExit('Staged Ogkalu model checksum mismatch.')
+    result=subprocess.run([str(python/'python.exe'),'-B','-I','-c','import fastapi,cv2,numpy,pydantic,onnxruntime,PIL.Image,sys; sys.path.insert(0,"runtime/app"); from mangaclean.services.ogkalu_text import _session; _session(); print(sys.prefix)'],
                           cwd=target,capture_output=True,text=True,creationflags=subprocess.CREATE_NO_WINDOW)
     if result.returncode:raise SystemExit(result.stderr)
     if Path(result.stdout.strip()).resolve()!=python.resolve():raise SystemExit('Staged Python did not resolve its own prefix.')

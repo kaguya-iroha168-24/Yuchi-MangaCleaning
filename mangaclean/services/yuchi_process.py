@@ -21,7 +21,7 @@ class DetectorUnavailable(RuntimeError):
 
 _session = None
 _lock = threading.Lock()
-DETECTOR_IDLE_SECONDS = 60
+DETECTOR_IDLE_SECONDS = 300
 
 
 def startup_gpu_available():
@@ -41,14 +41,14 @@ def startup_gpu_available():
 
     memory = MemoryStatus()
     memory.length = ctypes.sizeof(memory)
-    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) or memory.available_physical < 4 * 2**30:
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) or memory.available_physical < 1 * 2**30:
         return False
     try:
         gpu = subprocess.run([executable, '--id=0', '--query-gpu=memory.total,memory.free',
                               '--format=csv,noheader,nounits'], capture_output=True, text=True, check=True,
                              timeout=3, creationflags=subprocess.CREATE_NO_WINDOW)
         total, free = map(int, gpu.stdout.strip().split(','))
-        return total >= 4096 and free >= 3072
+        return total >= 2048 and free >= 1536
     except (OSError, subprocess.SubprocessError, ValueError):
         return False
 
@@ -175,11 +175,11 @@ class YuchiProcess:
         with tempfile.TemporaryDirectory(prefix='scan-', dir=cache) as temp:
             folder = Path(temp)
             if image is not None:
-                ok, encoded = cv2.imencode('.png', image)
+                ok, encoded = cv2.imencode('.bmp', image)
                 if not ok:
                     raise DetectorUnavailable('Could not encode the native image for inference.')
-                (folder/'input.png').write_bytes(encoded.tobytes())
-            request = dict(config, input=str(folder/'input.png'), output=str(folder/'result.json'),action=action)
+                (folder/'input.bmp').write_bytes(encoded.tobytes())
+            request = dict(config, input=str(folder/'input.bmp'), output=str(folder/'result.json'),action=action)
             (folder/'request.json').write_text(json.dumps(request), encoding='utf-8')
             result_path = folder/'result.json'
             global _session

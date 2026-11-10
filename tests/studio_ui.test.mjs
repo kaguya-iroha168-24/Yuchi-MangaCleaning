@@ -132,3 +132,17 @@ test('Saved only reflects a verified persisted path, not merely clean state', ()
   assert.match(render({ ...doc, savedPath: 'verified.mangaclean' }), />Saved<\/span>/);
   assert.match(render({ ...doc, savedPath: 'verified.mangaclean', dirty: true }), />Unsaved<\/span>/);
 });
+test('StudioHeader and ToolRail expose consistent Text only Clean guidance when Working layer is hidden', () => {
+  const hint = 'To clean text, enable the Layers → Cleaned / Working checkbox.';
+  const headerHtml = renderToStaticMarkup(React.createElement(ui.StudioHeader, {
+    document: { sourceName: 'page_001.png' }, busy: false, canScan: true, canClean: false, cleanHint: hint,
+    detectionMode: 'text', overlayMode: false, detectAll: false, pageCount: 1,
+    onOpen() {}, onSave() {}, onExport() {}, onUndo() {}, onRedo() {}, onSettings() {}, onProcess() {}, onToggleAll() {}, onClean() {},
+  }));
+  assert.match(headerHtml, /<button disabled="" aria-label="Clean Selected" title="To clean text, enable the Layers → Cleaned \/ Working checkbox\.">Clean<\/button>/);
+  const railHtml = renderToStaticMarkup(React.createElement(ui.ToolRail, {
+    tool: 'select', ready: true, hasPreview: false, busy: false, canPreview: false, cleanHint: hint,
+    onTool() {}, onPreview() {}, onHealing() {},
+  }));
+  assert.match(railHtml, /<button disabled="" title="To clean text, enable the Layers → Cleaned \/ Working checkbox\.">Preview Mask<\/button>/);
+});

@@ -73,7 +73,15 @@ def segment_native(model,image,request,device):
             masks=ops.process_mask_native(prototypes,coefficients[start:start+8],boxes[start:start+8],image.shape[:2]).numpy()>0
             for j,mask in enumerate(masks,start):
                 if mask.any():
-                    ys,xs=np.where(mask);x,y,w,h=int(xs.min()),int(ys.min()),int(xs.max()-xs.min()+1),int(ys.max()-ys.min()+1)
+                    bx0, by0 = max(0, int(boxes[j][0])), max(0, int(boxes[j][1]))
+                    bx1, by1 = min(image.shape[1], int(boxes[j][2]) + 1), min(image.shape[0], int(boxes[j][3]) + 1)
+                    roi = mask[by0:by1, bx0:bx1]
+                    if roi.any():
+                        ys, xs = np.where(roi)
+                        x, y, w, h = bx0 + int(xs.min()), by0 + int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)
+                    else:
+                        ys, xs = np.where(mask)
+                        x, y, w, h = int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)
                     ok,encoded=cv2.imencode('.png',mask[y:y+h,x:x+w].astype(np.uint8)*255)
                     if not ok:raise ValueError('Could not encode native container mask.')
                     payload=base64.b64encode(encoded.tobytes()).decode('ascii')
@@ -82,12 +90,25 @@ def segment_native(model,image,request,device):
     return predictions
 
 
+_CHECKPOINT_HASH_CACHE = {}
+
 def sha256(path):
+    p = Path(path)
+    try:
+        st = p.stat()
+        key = (str(p), st.st_mtime_ns, st.st_size)
+        if key in _CHECKPOINT_HASH_CACHE:
+            return _CHECKPOINT_HASH_CACHE[key]
+    except OSError:
+        key = None
     value = hashlib.sha256()
-    with path.open('rb') as stream:
+    with p.open('rb') as stream:
         for block in iter(lambda: stream.read(1024*1024), b''):
             value.update(block)
-    return value.hexdigest()
+    digest = value.hexdigest()
+    if key is not None:
+        _CHECKPOINT_HASH_CACHE[key] = digest
+    return digest
 
 
 def automatic_device(torch):
@@ -257,6 +278,14 @@ def handle(path):
 
 def main():
     if sys.argv[1] == '--serve':
+        try:
+            import cv2
+            import numpy as np
+            import torch
+            import ultralytics
+            from ultralytics import YOLO
+        except Exception:
+            pass
         for line in sys.stdin:
             if line.strip():
                 handle(json.loads(line))

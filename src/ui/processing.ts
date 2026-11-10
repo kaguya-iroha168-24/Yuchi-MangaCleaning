@@ -22,3 +22,31 @@ export function processingMessage(job: Job): string {
   if(r.outputMode==='overlay')return `${pages} pages ready for overlay · add or translate dialogue to cover its linked source text.`;
   return `${pages} pages processed · ${Number(r.cleanedRegions ?? 0)} regions cleaned · ${Number(r.skippedRegions ?? 0)} skipped${r.alreadyProcessedRegions ? ` · ${Number(r.alreadyProcessedRegions)} already clean` : ''}.`;
 }
+
+export function textCleanHint(options: {
+  showWorking?: boolean;
+  textMode?: 'clean' | 'overlay';
+  artwork?: 'working' | 'original' | 'hidden';
+  artworkLocked?: boolean;
+}): string {
+  const steps: string[] = [];
+  if (options.textMode === 'overlay') {
+    steps.push('choose Clean in Settings → Editing → Text treatment');
+  }
+  if ((options.artwork ?? 'working') !== 'working') {
+    steps.push('set Layers → Artwork in Editing and export to Cleaned / Working');
+  }
+  if (options.showWorking === false) {
+    steps.push('enable the Layers → Cleaned / Working checkbox');
+  }
+  if (options.artworkLocked) {
+    steps.push('uncheck Layers → Lock working artwork');
+  }
+  if (!steps.length) return '';
+  const list = steps.length === 1
+    ? steps[0]
+    : steps.length === 2
+      ? `${steps[0]} and ${steps[1]}`
+      : `${steps.slice(0, -1).join(', ')}, and ${steps.at(-1)}`;
+  return `To clean text, ${list}.`;
+}

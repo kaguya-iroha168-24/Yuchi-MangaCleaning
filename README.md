@@ -14,8 +14,8 @@ sidecar has been verified yet.
    process only. It opens the Tauri development desktop window.
 3. Open PNG/JPEG or an existing `.mangaclean` project. Scan a fresh page with
    Shima V1 or OpenCV fallback, review a candidate, inspect its mask, and confirm
-   cleaning. Only accepted candidates can be cleaned; Ctrl-click and Accept selected
-   support a batch. Add/erase brush edits stay inside the safe mask interior, and
+   cleaning. Detected and manual bubble candidates can be previewed and cleaned directly without a mandatory Accept/Review step (use Exclude to skip a candidate); Ctrl-click supports multi-bubble preview/clean batches. In **Text only** mode (`Settings → Editing → Detection mode: Text only`), Scan runs the local Ogkalu ONNX detector to place text boxes on the Original canvas without modifying pixels; to run **Preview Mask** or **Clean** on a selected text box, set **Settings → Editing → Text treatment** to **Clean**, set **Layers → Artwork in Editing and export** to **Cleaned / Working**, enable the **Layers → Cleaned / Working** checkbox, and keep **Layers → Lock working artwork** unchecked (mask brush edits in Text only mode support erase-only refinement).
+   Add/erase brush edits in Bubble mode stay inside the safe mask interior, and
    Undo/Redo restore pixels, candidates, and source-text metadata.
    Save Project writes a new editable copy to `outputs\projects` and
    verifies a reload before showing Saved. Export PNG writes the full-resolution
@@ -36,8 +36,8 @@ owned process tree if necessary. It does not launch or change the PySide6 app.
 - Source images remain separate from working pixels. Cleaning uses native-resolution
   masks and the copied `restore_text`/`execute` pipeline. Export never uses a canvas
   screenshot.
-- A second scan on a document with candidates, masks, or source text is blocked to
-  protect review data. Open a new copy to rescan.
+- Rescan behavior depends on the active detection mode: in **Bubble** mode, Scan (`/v1/process`) reuses existing non-manual bubble candidates on populated pages (and skips bubbles already cleaned with the same mask/method), whereas the legacy `/v1/detect` endpoint still blocks a second scan when candidates, masks, or source text exist. In **Text only** mode (`/v1/detect-text`), rescanning updates unedited automatic Ogkalu text boxes while preserving manual regions, edited source text, OCR proposals, and regions linked to dialogues.
+- Project compatibility (`.mangaclean` v1–v4): pages using only baseline composition save as format v3, whereas pages using extended v4 properties (`Overlay` text treatment, artwork source/lock changes, image adjustments, layer ordering/locks, or non-default typography styles such as `manga_lettering` created by Gemini translation) save as format v4 and cannot be opened by older releases that only read v1–v3.
 - This development build references existing Shima and OCR Python runtimes and
   checkpoints read only. Their cache and temporary paths are redirected to this
   workspace. Redistribution needs a separate bundled sidecar, license review, and

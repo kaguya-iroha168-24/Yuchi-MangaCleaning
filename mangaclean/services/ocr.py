@@ -11,7 +11,7 @@ from uuid import uuid4
 import cv2
 
 ROOT=Path(__file__).resolve().parents[2]
-RUNTIME_IDLE_SECONDS=10
+RUNTIME_IDLE_SECONDS=300
 _runtime_lock=RLock()
 _runtimes={}
 

@@ -6,6 +6,7 @@ from typing import Literal
 from uuid import uuid4
 import json
 import threading
+import time
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 from backend.automatic_processing import clean_page
@@ -57,7 +58,9 @@ def register(namespace):
                     check(job)
                     if chapter:chapter.activate(store,page_id);m.clear_render_cache()
                     check(job,page_id);doc=store.require()
-                    store.job.update(stage='detect',currentPageId=page_id,editingAllowed=False,message=f'Processing page {page_number+1} of {len(ids)} · detecting',progress=page_number/len(ids))
+                    page_slice = 1.0 / len(ids)
+                    base_progress = page_number * page_slice
+                    store.job.update(stage='detect',currentPageId=page_id,editingAllowed=False,message=f'Processing page {page_number+1} of {len(ids)} - detecting (1/10)...',progress=base_progress + page_slice * 0.1)
                     if text_only:
                         store.job['message'] = f'Locating text on page {page_number+1} of {len(ids)}'
                         source, bubbles = doc.source, tuple(doc.bubbles)
@@ -97,13 +100,23 @@ def register(namespace):
                     working=doc.working.copy() if needs_detection else None
                 try:
                     if needs_detection:
+                        with store.lock:
+                            if store.job and store.job['id'] == job: store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (4/10)...',progress=base_progress + page_slice * 0.4)
+                        def on_detect_progress(subprogress, text=None):
+                            with store.lock:
+                                if store.job and store.job['id'] == job:
+                                    store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (7/10)...',progress=base_progress + page_slice * 0.7)
                         batch=namespace['detect_with_fallback'](payload.provider,source,working,payload.device,store.cancel)
+                        with store.lock:
+                            if store.job and store.job['id'] == job: store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (7/10)...',progress=base_progress + page_slice * 0.8)
                         with store.lock:
                             check(job,page_id);doc=store.require();store.capture()
                             doc.bubbles=[*manual_bubbles, *batch.bubbles[:200-len(manual_bubbles)]] if manual_bubbles else batch.bubbles
                             batch.metadata.update(cache_key=identity,displayed_count=len(doc.bubbles))
                             doc.detection_runs.append(batch.metadata);doc.revision+=1;doc.dirty=True;store.preview=None;detected+=1
                     else:reused+=1
+                    with store.lock:
+                        if store.job and store.job['id'] == job: store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (10/10)...',progress=base_progress + page_slice * 1.0)
                     with store.lock:
                         check(job,page_id);doc=store.require();graph=deepcopy(doc.region_graph)
                         for bubble in doc.bubbles:

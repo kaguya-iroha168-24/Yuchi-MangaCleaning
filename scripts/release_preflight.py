@@ -2,9 +2,11 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
-REPORT=Path(r'E:\BagassZx\Yuchi-Diagnostics\mangaclean-tauri-migration\realworld-20261028')
+REPORT=ROOT/'.cache'
+OGKALU_SHA256='5fe9e4f576e49d4e7e8b0e029d6d3cdc252abd4694113e1cae120e62c931ea79'
 
 
 def digest(path):
@@ -28,6 +30,15 @@ def main():
     shima=detection['shima_v1'];after=digest(Path(shima['checkpoint']))
     assert after==shima['checkpoint_sha256']
     models.append(dict(path=shima['checkpoint'],expected_sha256=shima['checkpoint_sha256'],after_sha256=after,unchanged=True))
+    ogkalu=ROOT/'models/ogkalu/detector-v4-s_int8.onnx';ogkalu_license=ROOT/'models/ogkalu/LICENSE.txt'
+    assert ogkalu.is_file() and ogkalu_license.is_file()
+    after=digest(ogkalu)
+    assert after==OGKALU_SHA256
+    models.append(dict(path=str(ogkalu),expected_sha256=OGKALU_SHA256,after_sha256=after,unchanged=True))
+    backend_python=ROOT/'.venv-standalone/Scripts/python.exe'
+    probe=subprocess.run([str(backend_python),'-B','-I','-c','import onnxruntime,PIL.Image,sys; sys.path.insert(0,str(r"'+str(ROOT)+'")); from mangaclean.services.ogkalu_text import _session; _session()'],
+                         cwd=ROOT,capture_output=True,text=True)
+    assert probe.returncode==0,probe.stderr
     preflight=dict(status='Blocked',validation_gate_passed=False,bundle_active=tauri['bundle']['active'],
         development_exe=str(ROOT/'src-tauri/target/debug/yuchi-labs-tauri.exe'),
         development_exe_exists=(ROOT/'src-tauri/target/debug/yuchi-labs-tauri.exe').is_file(),
