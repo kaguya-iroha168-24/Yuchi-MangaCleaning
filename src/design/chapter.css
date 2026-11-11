@@ -118,6 +118,11 @@
   font-weight: 600;
 }
 
+.pipeline-pill-toggle.active:hover:not(:disabled) {
+  color: var(--studio-accent);
+  background: rgba(239, 68, 68, 0.22);
+}
+
 .pipeline-action-btn {
   display: inline-flex;
   align-items: center;
@@ -184,6 +189,9 @@
 
 /* Primary Export button */
 .atelier-export-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   height: 28px;
   padding: 0 12px;
   border: 1px solid var(--studio-accent);

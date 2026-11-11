@@ -1,8 +1,9 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { Aperture, ChevronLeft, ChevronRight, FolderOpen, Hand, Languages, LoaderCircle, MousePointer2, Paintbrush, PanelLeftClose, PanelRightClose, Redo2, Save, Scan, Settings2, Type, Undo2, Upload } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FolderOpen, Hand, Languages, LoaderCircle, MousePointer2, Paintbrush, PanelLeftClose, PanelRightClose, Redo2, Save, Settings2, Type, Undo2, Upload } from 'lucide-react';
 import type { Bubble, DocumentState, Job } from '../api';
 import { LoupePreview, MiniMap, ViewportReadout } from './CanvasWorkspace';
 import type { ViewportController } from '../ui/viewport';
+import { MangaCleanLogo, BoxToolIcon, BubbleDetectIcon, CleanInpaintIcon, ExportTrayIcon } from './MangaCleanIcons';
 
 export type StudioTool = 'select' | 'pan' | 'manual' | 'text' | 'mask-add' | 'mask-erase';
 export type WorkflowStep = 1 | 2 | 3 | 4;
@@ -33,7 +34,7 @@ export function StudioHeader(props: {
   const allPages = props.detectAll && props.pageCount > 1;
   const process = props.detectionMode === 'text' ? 'Detect Text Only' : props.overlayMode ? 'Detect Bubbles for Overlay' : 'Detect & Clean Bubbles';
   return <header className="studio-header">
-    <div className="studio-brand"><Aperture size={20}/><div><strong>Yuchi Labs</strong><small>MangaClean Atelier</small></div></div>
+    <div className="studio-brand"><MangaCleanLogo size={20}/><div><strong>Yuchi Labs</strong><small>MangaClean Atelier</small></div></div>
     <div className="studio-project" title={name}><span>{name}</span></div>
     <div className="header-actions">
       <div className="header-import segmented-group" role="group" aria-label="Import">
@@ -44,7 +45,7 @@ export function StudioHeader(props: {
       <div className="header-pipeline-group" role="group" aria-label="Pipeline Actions">
         <div className="header-detect-pill" role="group" aria-label={props.detectionMode === "text" ? "Text detection" : "Bubble detection"}>
           <button type="button" className="pipeline-detect-btn" disabled={!props.canScan} onClick={props.onProcess} title={`${process} on ${allPages ? `all ${props.pageCount} pages` : 'the current page'} (Ctrl+Shift+S)`}>
-            <Scan size={14} />
+            <BubbleDetectIcon size={14} />
             <span>{props.detectionMode === 'text' ? 'Detect Text' : 'Detect'}</span>
           </button>
           <button type="button" className={`pipeline-pill-toggle ${allPages ? 'active' : ''}`} disabled={!props.canScan || props.pageCount < 2} aria-pressed={allPages} onClick={props.onToggleAll} title="Apply detection and Translate to all pages">All Pages</button>
@@ -54,7 +55,8 @@ export function StudioHeader(props: {
           <span>Translate</span>
         </button>
         <button type="button" className="pipeline-action-btn clean-btn" disabled={!props.canClean} onClick={props.onClean} aria-label="Clean Selected" title={props.cleanHint || 'Clean Selected'}>
-          Clean
+          <CleanInpaintIcon size={14} />
+          <span>Clean</span>
         </button>
       </div>
     </div>
@@ -66,7 +68,10 @@ export function StudioHeader(props: {
         <button type="button" className="stepper-nav-btn" aria-label="Next page" disabled={!props.pages.next} onClick={()=>props.pages?.next?.()}><ChevronRight size={14}/></button>
       </div>}
       <UndoRedoMenu document={file} saveBusy={props.processing} busy={props.busy} onUndo={props.onUndo} onRedo={props.onRedo} onSave={props.onSave}/>
-      <button type="button" className="atelier-export-btn" disabled={!file || props.busy || props.processing} onClick={props.onExport}>Export</button>
+      <button type="button" className="atelier-export-btn" disabled={!file || props.busy || props.processing} onClick={props.onExport}>
+        <ExportTrayIcon size={14} />
+        <span>Export</span>
+      </button>
       <ChromeButton label="Settings (Ctrl+,)" onClick={props.onSettings}><Settings2 size={16}/></ChromeButton>
     </div>
   </header>;
@@ -74,7 +79,7 @@ export function StudioHeader(props: {
 
 export function ToolRail({ tool, onTool, ready, hasPreview, busy, canPreview, cleanHint, onPreview, onHealing }: { tool: StudioTool; onTool: (tool: StudioTool) => void; ready: boolean; hasPreview: boolean; busy: boolean; canPreview: boolean; cleanHint?: string; onPreview: () => void; onHealing: () => void }) {
   return <nav className="tool-rail top-tools segmented-tools" aria-label="Editing tools">
-    <ChromeButton label="Box Draw / Select text area manually (B)" active={tool === 'manual'} disabled={!ready || busy} onClick={() => onTool('manual')}><span className="box-tool-icon" /></ChromeButton>
+    <ChromeButton label="Box Draw / Select text area manually (B)" active={tool === 'manual'} disabled={!ready || busy} onClick={() => onTool('manual')}><BoxToolIcon size={15} /></ChromeButton>
     <ChromeButton label="Add text (T)" active={tool === 'text'} disabled={!ready || busy} onClick={() => onTool('text')}><Type size={15} /></ChromeButton>
     <details className="tool-overflow" onKeyDown={event=>{if(event.key==='Escape'){event.currentTarget.open=false;event.currentTarget.querySelector<HTMLElement>('summary')?.focus();}}}><summary aria-label="Mask and healing tools" title="Mask and healing tools"><Paintbrush size={15} /></summary><div onClick={event=>event.currentTarget.closest('details')?.removeAttribute('open')}>
       <button disabled={!ready || busy || !canPreview} title={cleanHint || undefined} onClick={onPreview}>Preview Mask</button>

@@ -4,7 +4,8 @@ import { PageNavigation } from './ui/pageNavigation';
 import { processingPageIds, processingMessage, refreshJobImages, textCleanHint } from './ui/processing';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@radix-ui/react-tooltip';
-import { Aperture, CircleHelp, Eye, FolderOpen, Layers3, X } from 'lucide-react';
+import { CircleHelp, Eye, FolderOpen, Layers3, Trash2, X } from 'lucide-react';
+import { MangaCleanLogo } from './components/MangaCleanIcons';
 import { Api, ApiError, type DetectionMode, type ExportPreflight, type Job, type LayerPatch, type PageComposition, type Preview, type State, type TextRegion, connect } from './api';
 import { ChapterNavigator } from './components/ChapterNavigator';
 import { ContextToolbar, DockResizeHandle, EngineStatusBar, FeatureBadge, InspectorDock, PageNavigator, StudioHeader, ToolRail, type DockTab } from './components/StudioShell';
@@ -290,7 +291,19 @@ export default function App() {
           return;
         }
       }
-      if(event.key==='Delete' && !blocksStudioShortcuts(event.target,event.isComposing) && !settings && !exportOpen && !textEditor && !busy && !running){ event.preventDefault(); if(selectedDialogueId)deleteDialogue(selectedDialogueId);else if(detectionMode === 'bubble')excludeCandidate();return; }
+      if((event.key === 'Delete' || event.key === 'Backspace') && !blocksStudioShortcuts(event.target, event.isComposing) && !settings && !exportOpen && !textEditor && !busy && !running) {
+        if (selectedDialogueId) {
+          event.preventDefault();
+          deleteDialogue(selectedDialogueId);
+        } else if (activeTextId) {
+          event.preventDefault();
+          deleteTextRegion(activeTextId);
+        } else if (active) {
+          event.preventDefault();
+          deleteActiveBubble();
+        }
+        return;
+      }
       const shortcut = resolveStudioShortcut(event);
       if (!shortcut) return;
       if (event.ctrlKey || event.metaKey) event.preventDefault();
@@ -385,6 +398,24 @@ export default function App() {
     }, 'Preparing translation…');
   };
   const excludeCandidate = () => { if(api && active) void action(async () => {await flushEdits();setState(await api.post<State>(`/v1/bubbles/${active.id}/exclude`));resetSelection();}); };
+  const deleteTextRegion = (id?: string) => {
+    const targetId = id || activeText?.id;
+    if (!api || !targetId || busy || jobActive) return;
+    void action(async () => {
+      await flushEdits();
+      setState(await api.post<State>(`/v1/text-regions/${encodeURIComponent(targetId)}/delete`));
+      setActiveTextId(null);
+      resetSelection();
+    });
+  };
+  const deleteActiveBubble = () => {
+    if (!api || !document || !active || busy || jobActive) return;
+    void action(async () => {
+      await flushEdits();
+      setState(await api.post<State>(`/v1/bubbles/${active.id}/delete`, { pageId: document.pageId }));
+      resetSelection();
+    });
+  };
   const addManualBubble = () => {
     if (!api || !document || !manualRect || busy || jobActive) return;
     void action(async () => {
@@ -709,7 +740,7 @@ export default function App() {
       <div className="canvas-column">
         {saveNotice && <div className="save-notice" role="status">{saveNotice}</div>}
         {error && <div className="error-banner" role="alert"><CircleHelp size={17} /><div><span>{error}</span>{exportIssues && <><p>Halaman {exportIssues.pageNumber}: {exportIssues.pageName}. Proyek tetap dapat disimpan.</p><ul style={{ maxHeight: 160, overflowY: 'auto' }}>{exportIssues.issues.map(issue => <li key={issue.dialogueId}><strong>{issue.dialogueLabel}</strong> · {issue.candidateNumber ? `Candidate ${String(issue.candidateNumber).padStart(2, '0')}` : 'Tanpa kandidat terhubung'}<br />{issue.reason}<br />Requested: {issue.requestedFamily} / {issue.requestedWeight} / {issue.requestedSize}px · Actual: {issue.resolvedFamily ?? 'tidak tersedia'} / {issue.resolvedWeight ?? '—'} / {issue.resolvedSize ?? '—'}px<br /><small>Dialogue ID: {issue.dialogueId} · Bubble ID: {issue.bubbleId ?? '—'}</small><br /><button disabled={busy || running || document?.pageId !== exportIssues.pageId || !document?.dialogues.some(text => text.id === issue.dialogueId)} onClick={() => { const text = document?.dialogues.find(text => text.id === issue.dialogueId); if (!text || document?.pageId !== exportIssues.pageId) return; selectDialogue(text.id); setShowTypography(true); setShowSelection(true); viewport.update({ pan: { x: text.x + text.width / 2 - document.width / 2, y: text.y + text.height / 2 - document.height / 2 } }); }}>Pilih dan perbaiki Dialogue</button></li>)}</ul></>}</div>{!api && !exportIssues && <button disabled={busy} onClick={reconnect}>Reconnect</button>}<button aria-label="Dismiss error" onClick={() => { setError(''); setExportIssues(null); }}><X size={16} /></button></div>}
-        {document ? <CanvasWorkspace bubbleStatuses={bubbleStatuses} detectionMode={detectionMode} showRulers={showRulers} activeLayer={cachedPreview ? null : activeLayer} typography={{ session: typography, dialogues: cachedPreview ? [] : document.dialogues ?? [], selected: selectedDialogueId, visible: !cachedPreview && showTypography, coverText: composition.text_mode === 'overlay', onSelect: selectDialogue, onEdit: selectDialogue }} interaction={interaction} editable={Boolean(api) && !pendingPageId && !busy && !running && !textEditor} showRegions={showRegions} showSelection={!cachedPreview && showSelection} onEditText={editTextRegion} onDeselect={() => { setActiveLayer(null);setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); }} onCommitBubble={commitBubbleRect} onCommitRegion={commitRegionRect} onGesture={value => { setRegionGesture(value); if (value) { setSaveNotice(''); setPreview(null); setMaskUrl(null); } }} controller={viewport} original={cachedPreview?.original ?? original} working={cachedPreview?.working ?? working} containers={containers} mask={cachedPreview ? null : mask} width={cachedPreview ? pendingPage!.width : document.width} height={cachedPreview ? pendingPage!.height : document.height} name={cachedPreview ? pendingPage!.name : document.sourceName} bubbles={cachedPreview ? (cachedPreview.bubbles ?? []) : document.bubbles.filter(bubble=>!bubble.excluded)} textRegions={cachedPreview ? cachedPreview.textRegions ?? [] : document.textRegions} selected={cachedPreview ? emptySelection : selected} selectedTextId={cachedPreview ? null : activeTextId} tool={pendingPageId ? 'select' : tool} brushRadius={brushRadius} showBoxes={showBoxes} showMask={!cachedPreview && showMask} showOriginal={showOriginal} showWorking={showWorking} onBubble={selectFromScript} onRect={rect => { setManualRect(rect); if (tool === 'text') createDialogue(rect); }} onBrush={editMask} onText={selectTextRegion} /> : <div className="empty-workspace"><div className="empty-content"><div className="empty-icon"><Aperture size={31} /></div><h1>Open a page to get started</h1><p>Press Ctrl+O, or choose a chapter folder.</p><div className="empty-actions"><button className="text-command primary large" onClick={choose}><FolderOpen size={18} /> Open Image or Project</button><button className="text-command large" onClick={chooseFolder}>Open Chapter Folder</button></div><span className="empty-hint">PNG, JPEG, or .mangaclean · Processing stays on this computer</span></div></div>}
+        {document ? <CanvasWorkspace bubbleStatuses={bubbleStatuses} detectionMode={detectionMode} showRulers={showRulers} activeLayer={cachedPreview ? null : activeLayer} typography={{ session: typography, dialogues: cachedPreview ? [] : document.dialogues ?? [], selected: selectedDialogueId, visible: !cachedPreview && showTypography, coverText: composition.text_mode === 'overlay', onSelect: selectDialogue, onEdit: selectDialogue }} interaction={interaction} editable={Boolean(api) && !pendingPageId && !busy && !running && !textEditor} showRegions={showRegions} showSelection={!cachedPreview && showSelection} onEditText={editTextRegion} onDeselect={() => { setActiveLayer(null);setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); }} onCommitBubble={commitBubbleRect} onCommitRegion={commitRegionRect} onGesture={value => { setRegionGesture(value); if (value) { setSaveNotice(''); setPreview(null); setMaskUrl(null); } }} controller={viewport} original={cachedPreview?.original ?? original} working={cachedPreview?.working ?? working} containers={containers} mask={cachedPreview ? null : mask} width={cachedPreview ? pendingPage!.width : document.width} height={cachedPreview ? pendingPage!.height : document.height} name={cachedPreview ? pendingPage!.name : document.sourceName} bubbles={cachedPreview ? (cachedPreview.bubbles ?? []) : document.bubbles.filter(bubble=>!bubble.excluded)} textRegions={cachedPreview ? cachedPreview.textRegions ?? [] : document.textRegions} selected={cachedPreview ? emptySelection : selected} selectedTextId={cachedPreview ? null : activeTextId} tool={pendingPageId ? 'select' : tool} brushRadius={brushRadius} showBoxes={showBoxes} showMask={!cachedPreview && showMask} showOriginal={showOriginal} showWorking={showWorking} onBubble={selectFromScript} onRect={rect => { setManualRect(rect); if (tool === 'text') createDialogue(rect); }} onBrush={editMask} onText={selectTextRegion} /> : <div className="empty-workspace"><div className="empty-content"><div className="empty-icon"><MangaCleanLogo size={32} /></div><h1>Open a page to get started</h1><p>Press Ctrl+O, or choose a chapter folder.</p><div className="empty-actions"><button className="text-command primary large" onClick={choose}><FolderOpen size={18} /> Open Image or Project</button><button className="text-command large" onClick={chooseFolder}>Open Chapter Folder</button></div><span className="empty-hint">PNG, JPEG, or .mangaclean · Processing stays on this computer</span></div></div>}
       </div>
       {document && !rightCollapsed && <div className="right-dock-container" inert={Boolean(pendingPageId)} style={{ width: rightWidth }}><InspectorDock cardTypography={bubble => <TypographyCardControls session={typography} dialogues={document?.dialogues ?? []} bubbleId={bubble.id} selected={selectedDialogueId} disabled={!api || !document || busy || running || regionGesture || Boolean(textEditor)} onTarget={id => { setSelectedDialogueId(id); typography.select(id); setActiveTextId(null); }} />} document={document} selected={selected} onSelect={selectFromScript} tab={dockTab} onTab={setDockTab} onCollapse={() => setRightCollapsed(true)} layerControls={<>
         <label className="layer-control"><input type="checkbox" checked={showOriginal} onChange={event => setShowOriginal(event.target.checked)} />Raw Artwork<span>Original preview</span></label>
@@ -740,8 +771,24 @@ export default function App() {
       </section>} imageControls={<ImageAdjustments key={document.pageId} settings={composition} disabled={!api || busy || running || regionGesture || Boolean(composition.artwork_locked)} onChange={changeComposition} />}>
         <section className="selection-properties" aria-label="Selected object properties">
           {active || activeText || activeDialogue || manualRect ? <>
-            <div className="selection-title"><h2>{detectionMode === 'text' && activeLayer === 'source' ? 'Text region' : active ? `Bubble ${String(document!.bubbles.indexOf(active)+1).padStart(2,'0')}` : activeDialogue ? 'Dialogue' : 'Text region'}</h2>
-            {detectionMode === 'bubble' && active && <button disabled={busy || running} onClick={excludeCandidate} title="Exclude candidate from processing">Exclude</button>}</div>
+            <div className="selection-title">
+              <h2>{detectionMode === 'text' && activeLayer === 'source' ? (activeText ? `Text ${activeText.id.slice(0, 4)}` : 'Text region') : active ? `Bubble ${String(document!.bubbles.indexOf(active)+1).padStart(2,'0')}` : activeDialogue ? 'Dialogue' : 'Text region'}</h2>
+              <div className="selection-actions">
+                {detectionMode === 'text' && activeText && (
+                  <button type="button" className="delete-action-btn" disabled={busy || running} onClick={() => deleteTextRegion()} title="Hapus text region ini (Del / Backspace)">
+                    <Trash2 size={12} />
+                    <span>Hapus</span>
+                  </button>
+                )}
+                {active && (
+                  <button type="button" className="delete-action-btn" disabled={busy || running} onClick={deleteActiveBubble} title="Hapus bubble ini (Del / Backspace)">
+                    <Trash2 size={12} />
+                    <span>Hapus</span>
+                  </button>
+                )}
+                {detectionMode === 'bubble' && active && <button disabled={busy || running} onClick={excludeCandidate} title="Exclude candidate from processing">Exclude</button>}
+              </div>
+            </div>
             {tool === 'manual' && manualRect && <button disabled={!api || busy || jobActive} onClick={addManualBubble}>Add manual bubble region</button>}
             {active?.manualRegion && <button disabled={!api || busy || jobActive || active.hasAppliedMask} title={active.hasAppliedMask ? 'Undo cleaning before deleting this region' : 'Keep linked text and artwork'} onClick={deleteManualBubble}>Delete manual bubble region</button>}
             {document && <>{linkedDialogues.length > 1 && <TypographyLayerList session={typography} dialogues={linkedDialogues} selected={activeDialogue?.id ?? null} onSelect={selectDialogue} />}

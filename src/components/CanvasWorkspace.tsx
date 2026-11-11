@@ -7,6 +7,7 @@ import { TypographyOverlay } from './Typography';
 import type { TypographySession } from '../ui/typography';
 import type { RegionInteraction, RegionRect } from '../ui/regionEditing';
 import { Maximize, ZoomIn, ZoomOut } from 'lucide-react';
+import { DualCanvasSplitIcon } from './MangaCleanIcons';
 import type { Bubble, DetectionMode, TextRegion, Dialogue } from '../api';
 import { ViewportController, fitScale, imageOffset, roundedImageRect, toImage, visibleImageRect, zoomAt, type Point, type ViewMode } from '../ui/viewport';
 
@@ -28,7 +29,7 @@ export function FloatingCanvasToolbar({ controller }: { controller: ViewportCont
     </div>
     <div className="pill-separator" />
     <div className="pill-group pill-modes">
-      <button type="button" className={`pill-btn ${view.mode === 'dual' ? 'active' : ''}`} title="Synchronized Dual Canvas" aria-pressed={view.mode === 'dual'} onClick={() => controller.update({ mode: 'dual', peek: false })}>Split</button>
+      <button type="button" className={`pill-btn ${view.mode === 'dual' ? 'active' : ''}`} title="Synchronized Dual Canvas" aria-pressed={view.mode === 'dual'} onClick={() => controller.update({ mode: 'dual', peek: false })}><DualCanvasSplitIcon size={12} /><span>Split</span></button>
       <button type="button" className={`pill-btn ${view.mode === 'single' ? 'active' : ''}`} title="Single Focus View" aria-pressed={view.mode === 'single'} onClick={() => controller.update({ mode: 'single', peek: false })}>Single</button>
       <button type="button" className={`pill-btn ${view.mode === 'onion' ? 'active' : ''}`} title="Onion Skin Comparison" aria-pressed={view.mode === 'onion'} onClick={() => controller.update({ mode: 'onion', peek: false })}>Onion</button>
     </div>

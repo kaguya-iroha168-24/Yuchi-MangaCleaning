@@ -90,8 +90,14 @@ def register(namespace):
                             working_img = doc.working.copy()
                             working_changed = False
                             if not doc.composition.get('artwork_locked'):
-                                for region in graph.text_regions:
+                                total_regions = len(graph.text_regions)
+                                for reg_idx, region in enumerate(graph.text_regions, 1):
                                     check(job, page_id)
+                                    step_num = 4 + int(5 * reg_idx / max(1, total_regions))
+                                    step_prog = base_progress + page_slice * (0.4 + 0.55 * (reg_idx / max(1, total_regions)))
+                                    if store.job and store.job['id'] == job:
+                                        store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting ({step_num}/10)...', progress=step_prog)
+
                                     rect = tuple(region.rect)
                                     linked_bubble = None
                                     if region.bubble_id:
@@ -104,7 +110,9 @@ def register(namespace):
                                     try:
                                         mask, interior = prepare_text_selection(working_img, rect, bubble=linked_bubble)
                                         if cv2.countNonZero(mask) > 0:
-                                            res = restore_text(working_img, mask, method=m.AUTO, radius=3.0, interior=interior)
+                                            clean_method = m.WHITE if linked_bubble is not None else m.NS
+                                            clean_radius = 3.0 if linked_bubble is not None else 4.5
+                                            res = restore_text(working_img, mask, method=clean_method, radius=clean_radius, interior=interior if linked_bubble is not None else None)
                                             if res.changed_pixels > 0:
                                                 working_img = res.image
                                                 working_changed = True
@@ -112,7 +120,7 @@ def register(namespace):
                                         try:
                                             x, y, w, h = rect
                                             H, W = working_img.shape[:2]
-                                            pad = 2
+                                            pad = 12 if linked_bubble is None else 2
                                             x0, y0 = max(0, x - pad), max(0, y - pad)
                                             x1, y1 = min(W, x + w + pad), min(H, y + h + pad)
                                             roi = working_img[y0:y1, x0:x1]
@@ -122,7 +130,8 @@ def register(namespace):
                                                 thresh = min(205, max(30, int(otsu_val)))
                                                 ink = cv2.inRange(gray, 0, thresh)
                                                 if cv2.countNonZero(ink) > 0:
-                                                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                                                    k_size = (7, 7) if linked_bubble is None else (3, 3)
+                                                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, k_size)
                                                     dilated = cv2.dilate(ink, kernel)
                                                     fallback_mask = np.zeros(working_img.shape[:2], dtype=np.uint8)
                                                     fallback_mask[y0:y1, x0:x1] = dilated
@@ -130,7 +139,9 @@ def register(namespace):
                                                     fallback_interior[y0+1:y1-1, x0+1:x1-1] = 255
                                                     fallback_mask &= fallback_interior
                                                     if cv2.countNonZero(fallback_mask) > 0:
-                                                        res = restore_text(working_img, fallback_mask, method=m.AUTO, radius=3.0, interior=fallback_interior)
+                                                        clean_method = m.WHITE if linked_bubble is not None else m.NS
+                                                        clean_radius = 3.0 if linked_bubble is not None else 4.5
+                                                        res = restore_text(working_img, fallback_mask, method=clean_method, radius=clean_radius, interior=fallback_interior if linked_bubble is not None else None)
                                                         if res.changed_pixels > 0:
                                                             working_img = res.image
                                                             working_changed = True

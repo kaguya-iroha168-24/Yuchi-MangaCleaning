@@ -505,6 +505,33 @@ def delete_manual_bubble(identifier: str, payload: ActivePageRequest, request: R
         doc.revision += 1; doc.dirty = True; store.preview = None
         return public_state()
 
+@app.post('/v1/bubbles/{identifier}/delete')
+def delete_bubble(identifier: str, payload: ActivePageRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle()
+        doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before the bubble could be deleted.')
+        bubble = bubble_by_id(identifier)
+        if any(text.locked and text.bubble_id == identifier for text in doc.dialogues):
+            raise HTTPException(409, 'Unlock linked dialogue layers before deleting this region.')
+        bubbles = [item for item in doc.bubbles if item.id != identifier]
+        graph = doc.region_graph.detached({item.id for item in bubbles})
+        try:
+            graph.validate(doc.source.shape, bubbles)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        dialogues = [replace(text, bubble_id=None) if text.bubble_id == identifier else text for text in doc.dialogues]
+        store.capture(('bubbles', 'region_graph', 'dialogues'))
+        doc.bubbles = bubbles
+        doc.region_graph = graph
+        doc.dialogues = dialogues
+        doc.revision += 1
+        doc.dirty = True
+        store.preview = None
+        return public_state()
+
 
 @app.post('/v1/bubbles/{identifier}/geometry')
 def edit_bubble_geometry(identifier: str, payload: BubbleGeometryRequest, request: Request):
@@ -852,6 +879,23 @@ def delete_dialogue(identifier: str, request: Request):
         doc.dialogues = [text for text in doc.dialogues if text.id != identifier]
         if doc.active_text_id == identifier: doc.active_text_id = None
         doc.revision += 1; doc.dirty = True
+        return public_state()
+
+@app.post('/v1/text-regions/{identifier}/delete')
+def delete_text_region(identifier: str, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True)
+        doc = store.require()
+        target = next((tr for tr in doc.region_graph.text_regions if tr.id == identifier), None)
+        if target is None:
+            raise HTTPException(404, 'Text region not found.')
+        store.capture(('region_graph',))
+        graph = deepcopy(doc.region_graph)
+        graph.remove(identifier)
+        doc.region_graph = graph
+        doc.revision += 1
+        doc.dirty = True
         return public_state()
 
 

@@ -133,10 +133,13 @@ def boundary_ink_mask(gray, safe, padding=2):
 def prepare_text_selection(image, rect, bubble=None, padding=3):
     x, y, w, h = selection_rect(image, rect)
     H, W = image.shape[:2]
-    x0 = max(0, x - padding)
-    y0 = max(0, y - padding)
-    x1 = min(W, x + w + padding)
-    y1 = min(H, y + h + padding)
+    pad_x = 8 if bubble is None else padding
+    pad_top = 4 if bubble is None else padding
+    pad_bottom = 10 if bubble is None else padding
+    x0 = max(0, x - pad_x)
+    y0 = max(0, y - pad_top)
+    x1 = min(W, x + w + pad_x)
+    y1 = min(H, y + h + pad_bottom)
     rw, rh = x1 - x0, y1 - y0
 
     roi = image[y0:y1, x0:x1]
@@ -159,7 +162,9 @@ def prepare_text_selection(image, rect, bubble=None, padding=3):
         keep = np.zeros(count, np.uint8)
         for k in range(1, count):
             cx, cy, cw, ch, area = map(int, stats[k])
-            if (cx <= 0 or cy <= 0 or cx+cw >= rw or cy+ch >= rh or area < 2 or area > .5*rw*rh):
+            if (cx <= 0 and x0 == 0) or (cy <= 0 and y0 == 0) or (cx+cw >= rw and x1 == W) or (cy+ch >= rh and y1 == H):
+                continue
+            if area < 2 or area > .85*rw*rh:
                 continue
             keep[k] = 255
         glyphs = keep[labels]
@@ -190,9 +195,10 @@ def prepare_text_selection(image, rect, bubble=None, padding=3):
     protected = np.zeros(count, np.uint8)
     protected[np.unique(labels[safe == 0])] = 255
     protected[0] = 0
+    area_limit = .85*rw*rh if bubble is None else .24*rw*rh
     for k, (_, _, cw, ch, area) in enumerate(stats[1:], 1):
-        if (cw >= .88*rw or ch >= .88*rh or area > .24*rw*rh
-                or (cw >= .45*rw and cw >= 8*ch) or (ch >= .45*rh and ch >= 8*cw)):
+        if (cw >= .95*rw or ch >= .95*rh or area > area_limit
+                or (cw >= .60*rw and cw >= 8*ch) or (ch >= .60*rh and ch >= 8*cw)):
             protected[k] = 255
     safe &= cv2.bitwise_not(dilate_mask(protected[labels], 2))
     glyphs &= safe
@@ -200,8 +206,9 @@ def prepare_text_selection(image, rect, bubble=None, padding=3):
     areas = candidates[1:, 4]
     if len(areas) > 40 and np.std(areas)/max(1, np.mean(areas)) < .2:
         raise ValueError('Repeated fine marks may be artwork or screentone. No artwork was changed.')
-    local = dilate_mask(glyphs, 2) & safe
-    if not np.any(local) or np.count_nonzero(local) > .52*rw*rh:
+    dilation_radius = 5 if bubble is None else 2
+    local = dilate_mask(glyphs, dilation_radius) & safe
+    if not np.any(local) or np.count_nonzero(local) > .85*rw*rh:
         raise ValueError('No reliable text mask in this box. Adjust the selection and try again.')
     mask = np.zeros(image.shape[:2], np.uint8)
     interior = np.zeros_like(mask)

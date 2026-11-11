@@ -10,6 +10,7 @@ from .mask_processor import Rect, dilate_mask, validate_image, validate_mask
 TELEA = 'Telea Inpainting'
 WHITE = 'White Bubble Clean'
 AUTO = 'Auto / Recommended'
+NS = 'Navier-Stokes Inpainting'
 NO_TEXT = 'No removable text pixels were found. Try selecting the text more precisely or use the mask brush.'
 
 
@@ -112,7 +113,9 @@ def restore_text(image: np.ndarray, mask: np.ndarray, method: str = TELEA,
         elif not uniform:
             raise ValueError('The local background is not uniformly light. Refine the mask or choose Telea Inpainting.')
     if method == TELEA:
-        output = inpaint(image, mask, radius)
+        output = inpaint(image, mask, radius, flag=cv2.INPAINT_TELEA)
+    elif method == NS:
+        output = inpaint(image, mask, radius, flag=cv2.INPAINT_NS)
     elif method == WHITE:
         background = np.median(samples, axis=0).astype(np.uint8)
         output = image.copy()

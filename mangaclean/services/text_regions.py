@@ -71,10 +71,40 @@ def text_layout_rect(region, bubble):
     return region.rect
 
 
+def _extend_vertical_column(image, rect):
+    x, y, w, h = rect
+    H, W = image.shape[:2]
+    if h < 2.2 * w or y + h >= H - 5:
+        return rect
+    col_x0 = max(0, x - 2)
+    col_x1 = min(W, x + w + 2)
+    max_down = min(H, y + h + int(h * 0.6) + 80)
+    strip = image[y+h:max_down, col_x0:col_x1]
+    if strip.size == 0:
+        return rect
+    strip_gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY) if strip.ndim == 3 else strip
+    otsu_val, _ = cv2.threshold(strip_gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    thresh = min(205, max(30, int(otsu_val)))
+    ink = cv2.inRange(strip_gray, 0, thresh)
+    row_counts = np.count_nonzero(ink, axis=1)
+    extended_h = h
+    consecutive_empty = 0
+    for r_idx, cnt in enumerate(row_counts):
+        if cnt >= 2:
+            extended_h = h + r_idx + 1
+            consecutive_empty = 0
+        else:
+            consecutive_empty += 1
+            if consecutive_empty > 24:
+                break
+    return (x, y, w, extended_h)
+
+
 def locate_text(image, bubbles, include_free_text=False):
     """Detect on the original page and link to a containing bubble when available."""
     detections = detect_text_bubbles(image, include_free_text=include_free_text) if include_free_text else detect_text_bubbles(image)
     for rect, score in detections:
+        rect = _extend_vertical_column(image, rect)
         containing = [bubble for bubble in bubbles if overlap(rect, bubble.rect)[1] == 1]
         bubble = min(containing, key=lambda b: b.rect[2] * b.rect[3], default=None)
         if bubble is None or not bubble.provenance.get('excluded'):
