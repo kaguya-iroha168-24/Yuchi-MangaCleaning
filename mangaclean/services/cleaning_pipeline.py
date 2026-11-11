@@ -133,9 +133,9 @@ def boundary_ink_mask(gray, safe, padding=2):
 def prepare_text_selection(image, rect, bubble=None, padding=3):
     x, y, w, h = selection_rect(image, rect)
     H, W = image.shape[:2]
-    pad_x = 8 if bubble is None else padding
-    pad_top = 4 if bubble is None else padding
-    pad_bottom = 10 if bubble is None else padding
+    pad_x = 12 if bubble is None else padding
+    pad_top = 14 if bubble is None else padding
+    pad_bottom = 14 if bubble is None else padding
     x0 = max(0, x - pad_x)
     y0 = max(0, y - pad_top)
     x1 = min(W, x + w + pad_x)
@@ -170,9 +170,9 @@ def prepare_text_selection(image, rect, bubble=None, padding=3):
         glyphs = keep[labels]
 
     safe = np.full_like(gray, 255)
-    safe[[0, -1], :] = 0
-    safe[:, [0, -1]] = 0
     if bubble is not None:
+        safe[[0, -1], :] = 0
+        safe[:, [0, -1]] = 0
         bx, by, bw, bh = bubble.rect
         if x < bx or y < by or x+w > bx+bw or y+h > by+bh:
             raise ValueError('Keep the linked text box inside its bubble before cleaning.')
@@ -193,14 +193,22 @@ def prepare_text_selection(image, rect, bubble=None, padding=3):
     ink = cv2.inRange(gray, 0, ink_limit)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(ink)
     protected = np.zeros(count, np.uint8)
-    protected[np.unique(labels[safe == 0])] = 255
+    if bubble is not None:
+        protected[np.unique(labels[safe == 0])] = 255
     protected[0] = 0
     area_limit = .85*rw*rh if bubble is None else .24*rw*rh
     for k, (_, _, cw, ch, area) in enumerate(stats[1:], 1):
         if (cw >= .95*rw or ch >= .95*rh or area > area_limit
-                or (cw >= .60*rw and cw >= 8*ch) or (ch >= .60*rh and ch >= 8*cw)):
+                or (ch <= 6 and cw >= .60*rw and cw >= 8*ch)
+                or (cw <= 6 and ch >= .60*rh and ch >= 8*cw)):
             protected[k] = 255
     safe &= cv2.bitwise_not(dilate_mask(protected[labels], 2))
+    if bubble is None:
+        rx0, ry0 = x - x0, y - y0
+        rx1, ry1 = rx0 + w, ry0 + h
+        text_ink = np.zeros_like(ink)
+        text_ink[ry0:ry1, rx0:rx1] = ink[ry0:ry1, rx0:rx1]
+        glyphs = text_ink
     glyphs &= safe
     _, _, candidates, _ = cv2.connectedComponentsWithStats(glyphs)
     areas = candidates[1:, 4]

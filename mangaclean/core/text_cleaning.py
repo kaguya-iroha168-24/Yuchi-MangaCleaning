@@ -129,3 +129,45 @@ def restore_text(image: np.ndarray, mask: np.ndarray, method: str = TELEA,
     dark_before = int(np.count_nonzero(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)[mask > 0] < 205))
     dark_after = int(np.count_nonzero(cv2.cvtColor(output, cv2.COLOR_BGR2GRAY)[mask > 0] < 205))
     return CleanResult(output, pixels, changed, method, reason, outside, dark_before, dark_after)
+
+
+def synthesize_texture_block(image: np.ndarray, rect: Rect) -> np.ndarray | None:
+    """Synthesize background texture (screentone / vertical hatching) across a horizontal text region."""
+    x, y, w, h = rect
+    if w < 1.5 * h:
+        return None
+    H, W = image.shape[:2]
+    pad = min(25, max(8, int(h * 0.4)))
+    top_y0 = max(0, y - pad)
+    bot_y1 = min(H, y + h + pad)
+
+    top_strip = image[top_y0:y, x:x+w]
+    bot_strip = image[y+h:bot_y1, x:x+w]
+    if top_strip.size == 0 and bot_strip.size == 0:
+        return None
+
+    top_gray = cv2.cvtColor(top_strip, cv2.COLOR_BGR2GRAY) if top_strip.size > 0 else None
+    bot_gray = cv2.cvtColor(bot_strip, cv2.COLOR_BGR2GRAY) if bot_strip.size > 0 else None
+
+    col_std_top = float(np.std(np.mean(top_gray, axis=0))) if top_gray is not None and top_gray.shape[0] >= 3 else 0.0
+    col_std_bot = float(np.std(np.mean(bot_gray, axis=0))) if bot_gray is not None and bot_gray.shape[0] >= 3 else 0.0
+
+    if max(col_std_top, col_std_bot) < 10.0 and (bot_gray is None or np.mean(bot_gray) > 240):
+        return None
+
+    recon = np.zeros((h, w, 3), dtype=np.uint8)
+    for r in range(h):
+        alpha = r / max(1, h - 1)
+        for c in range(w):
+            t_pix = top_strip[-1, c].astype(float) if top_strip.size > 0 else np.array([255., 255., 255.])
+            b_pix = bot_strip[0, c].astype(float) if bot_strip.size > 0 else np.array([255., 255., 255.])
+            if np.mean(t_pix) > 235 and np.mean(b_pix) < 225 and bot_strip.size > 0:
+                sample_r = r % bot_strip.shape[0]
+                recon[r, c] = bot_strip[sample_r, c]
+            elif np.mean(b_pix) > 235 and np.mean(t_pix) < 225 and top_strip.size > 0:
+                sample_r = r % top_strip.shape[0]
+                recon[r, c] = top_strip[sample_r, c]
+            else:
+                recon[r, c] = np.clip((1 - alpha) * t_pix + alpha * b_pix, 0, 255).astype(np.uint8)
+    return recon
+

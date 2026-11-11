@@ -104,9 +104,18 @@ def locate_text(image, bubbles, include_free_text=False):
     """Detect on the original page and link to a containing bubble when available."""
     detections = detect_text_bubbles(image, include_free_text=include_free_text) if include_free_text else detect_text_bubbles(image)
     for rect, score in detections:
-        rect = _extend_vertical_column(image, rect)
         containing = [bubble for bubble in bubbles if overlap(rect, bubble.rect)[1] == 1]
         bubble = min(containing, key=lambda b: b.rect[2] * b.rect[3], default=None)
+        if bubble is not None:
+            bx, by, bw, bh = bubble.rect
+            x, y, w, h = rect
+            pad = 3
+            x0 = max(bx + pad, x)
+            y0 = max(by + pad, y)
+            x1 = min(bx + bw - pad, x + w)
+            y1 = min(by + bh - pad, y + h)
+            if x1 > x0 and y1 > y0:
+                rect = (x0, y0, x1 - x0, y1 - y0)
         if bubble is None or not bubble.provenance.get('excluded'):
             yield rect, bubble.id if bubble is not None else None, score
 

@@ -410,6 +410,10 @@ export default function App() {
   const scan = (scope = detectAll ? 'all' : 'current') => { if (canScan && api) void action(async () => { await flushEdits(); setPreview(null);setMaskUrl(null);
     if (detectionMode === 'bubble') frames.clearCache();
     const ids = processingPageIds(scope,state.chapter,queuedPages);
+    const count = ids.length;
+    const initialLabel = detectionMode === 'text' ? `Detecting text (1/${count})…` : `Detecting bubbles (1/${count})…`;
+    setOperation(initialLabel);
+    setOperationProgress(0);
     const job = detectionMode === 'text' ? await api.post<Job>('/v1/detect-text', {ids, include_free_text: includeFreeText})
       : await api.post<Job>('/v1/process', {provider,ids,skip_ocr:true,output_mode:composition.text_mode ?? 'clean'});
     setState(previous => ({...previous,job}));

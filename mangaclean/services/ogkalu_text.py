@@ -9,7 +9,7 @@ import numpy as np
 
 
 DETECTOR = 'ogkalu_v4_s_int8'
-CONFIDENCE = .30
+CONFIDENCE = .25
 MODEL = Path(__file__).resolve().parents[2] / 'models/ogkalu/detector-v4-s_int8.onnx'
 MODEL_SHA256 = '5fe9e4f576e49d4e7e8b0e029d6d3cdc252abd4694113e1cae120e62c931ea79'
 

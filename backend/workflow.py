@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 import cv2
 import numpy as np
 from backend.automatic_processing import clean_page
-from mangaclean.core.text_cleaning import restore_text, AUTO, TELEA, WHITE, NS
+from mangaclean.core.text_cleaning import restore_text, AUTO, TELEA, WHITE, NS, synthesize_texture_block
 from mangaclean.services.cleaning_pipeline import prepare_text_selection
 from mangaclean.services.text_regions import locate_text, merge_text_candidates
 
@@ -69,23 +69,24 @@ def register(namespace):
                     if text_only:
                         source, bubbles = doc.source, tuple(doc.bubbles)
                 if text_only:
+                    action_label = f'Detecting text ({page_number+1}/{len(ids)})'
                     try:
                         with store.lock:
                             check(job, page_id)
                             if store.job and store.job['id'] == job:
-                                store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (4/10)...', progress=base_progress + page_slice * 0.4)
+                                store.job.update(message=f'{action_label} - detecting (2/10)...', progress=base_progress + page_slice * 0.2)
                         candidates = list(locate_text(source, bubbles, include_free_text=getattr(payload, 'include_free_text', False)))
                         with store.lock:
                             check(job, page_id)
                             if store.job and store.job['id'] == job:
-                                store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (7/10)...', progress=base_progress + page_slice * 0.7)
+                                store.job.update(message=f'{action_label} - detecting (4/10)...', progress=base_progress + page_slice * 0.4)
                             doc = store.require()
                             graph = deepcopy(doc.region_graph)
                             count = merge_text_candidates(graph, candidates, doc.dialogues)
                             graph.validate(doc.source.shape, doc.bubbles)
 
                             if store.job and store.job['id'] == job:
-                                store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (8/10)...', progress=base_progress + page_slice * 0.8)
+                                store.job.update(message=f'{action_label} - detecting (5/10)...', progress=base_progress + page_slice * 0.5)
 
                             working_img = doc.working.copy()
                             working_changed = False
@@ -93,10 +94,10 @@ def register(namespace):
                                 total_regions = len(graph.text_regions)
                                 for reg_idx, region in enumerate(graph.text_regions, 1):
                                     check(job, page_id)
-                                    step_num = 4 + int(5 * reg_idx / max(1, total_regions))
-                                    step_prog = base_progress + page_slice * (0.4 + 0.55 * (reg_idx / max(1, total_regions)))
+                                    step_num = min(9, max(5, round(5 + 4 * (reg_idx / max(1, total_regions)))))
+                                    step_prog = base_progress + page_slice * (0.5 + 0.45 * (reg_idx / max(1, total_regions)))
                                     if store.job and store.job['id'] == job:
-                                        store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting ({step_num}/10)...', progress=step_prog)
+                                        store.job.update(message=f'{action_label} - detecting ({step_num}/10)...', progress=step_prog)
 
                                     rect = tuple(region.rect)
                                     linked_bubble = None
@@ -107,6 +108,15 @@ def register(namespace):
                                             rx, ry, rw, rh = rect
                                             if rx >= bx and ry >= by and rx + rw <= bx + bw and ry + rh <= by + bh:
                                                 linked_bubble = b
+
+                                    if linked_bubble is None:
+                                        texture_block = synthesize_texture_block(working_img, rect)
+                                        if texture_block is not None:
+                                            rx, ry, rw, rh = rect
+                                            working_img[ry:ry+rh, rx:rx+rw] = texture_block
+                                            working_changed = True
+                                            continue
+
                                     try:
                                         mask, interior = prepare_text_selection(working_img, rect, bubble=linked_bubble)
                                         if cv2.countNonZero(mask) > 0:
@@ -165,7 +175,7 @@ def register(namespace):
                                 store.preview = None
 
                             if store.job and store.job['id'] == job:
-                                store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (10/10)...', progress=base_progress + page_slice * 1.0)
+                                store.job.update(message=f'{action_label} (10/10)', progress=base_progress + page_slice * 1.0)
                             text_regions += count
                             processed += 1
                     except (m.OCRCancelled, m.DetectionCancelled):
@@ -186,17 +196,18 @@ def register(namespace):
                     source=doc.source.copy() if needs_detection else None
                     working=doc.working.copy() if needs_detection else None
                 try:
+                    action_label = f'Detecting bubbles ({page_number+1}/{len(ids)})'
                     if needs_detection:
                         with store.lock:
-                            if store.job and store.job['id'] == job: store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (4/10)...',progress=base_progress + page_slice * 0.4)
+                            if store.job and store.job['id'] == job: store.job.update(message=f'{action_label} - detecting (2/10)...',progress=base_progress + page_slice * 0.2)
                         def on_detect_progress(subprogress, text=None):
                             with store.lock:
                                 if store.job and store.job['id'] == job:
                                     val = float(subprogress) if isinstance(subprogress, (int, float)) else 0.5
-                                    frac = 0.4 + 0.38 * max(0.0, min(1.0, val))
-                                    step_num = min(9, max(4, round(frac * 10)))
-                                    store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting ({step_num}/10)...', progress=base_progress + page_slice * frac)
-                        batch = namespace['detect_with_fallback'](payload.provider, source, working, payload.device, store.cancel, on_progress=on_detect_progress)
+                                    frac = 0.2 + 0.75 * max(0.0, min(1.0, val))
+                                    step_num = min(9, max(2, round(frac * 10)))
+                                    store.job.update(message=f'{action_label} - detecting ({step_num}/10)...', progress=base_progress + page_slice * frac)
+                        batch = namespace['detect_with_fallback'](payload.provider, source, working, payload.device, store.cancel, None, None, None, on_detect_progress)
                         with store.lock:
                             check(job,page_id);doc=store.require();store.capture()
                             doc.bubbles=[*manual_bubbles, *batch.bubbles[:200-len(manual_bubbles)]] if manual_bubbles else batch.bubbles
@@ -204,7 +215,7 @@ def register(namespace):
                             doc.detection_runs.append(batch.metadata);doc.revision+=1;doc.dirty=True;store.preview=None;detected+=1
                     else:reused+=1
                     with store.lock:
-                        if store.job and store.job['id'] == job: store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (10/10)...',progress=base_progress + page_slice * 1.0)
+                        if store.job and store.job['id'] == job: store.job.update(message=f'{action_label} (10/10)',progress=base_progress + page_slice * 1.0)
                     with store.lock:
                         check(job,page_id);doc=store.require();graph=deepcopy(doc.region_graph)
                         for bubble in doc.bubbles:
