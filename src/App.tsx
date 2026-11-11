@@ -47,6 +47,7 @@ export default function App() {
   const [saveNotice, setSaveNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [operation, setOperation] = useState<string | null>(null);
+  const [operationProgress, setOperationProgress] = useState<number | undefined>(undefined);
   const [leftCollapsed, setLeftCollapsed] = useState(() => window.innerWidth < 1120);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [leftWidth, setLeftWidth] = useState(220);
@@ -332,7 +333,7 @@ export default function App() {
     return () => { window.removeEventListener('keydown', key); window.removeEventListener('keyup', up); window.removeEventListener('blur', restoreTool); };
   });
 
-  async function action(work: () => Promise<void>, label: string | null = null) { setError(''); setExportIssues(null); setSaveNotice(''); setBusy(true); setOperation(label); try { await work(); } catch (reason) { reportError(reason); } finally { setBusy(false); setOperation(null); } }
+  async function action(work: () => Promise<void>, label: string | null = null) { setError(''); setExportIssues(null); setSaveNotice(''); setBusy(true); setOperation(label); try { await work(); } catch (reason) { reportError(reason); } finally { setBusy(false); setOperation(null); setOperationProgress(undefined); } }
   const reconnect = () => void action(async () => { const client = await connect(); frames.clearCache(); await refresh(client, true); setApi(client); });
   async function flushEdits() { await sourceCommit.current; await typography.flush(); }
   const resetSelection = () => { setActiveLayer(null); setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); setManualRect(null); setNewDialogue(''); };
@@ -346,11 +347,42 @@ export default function App() {
     const openingProject = files.length === 1 && files[0].name.toLowerCase().endsWith('.mangaclean');
     const discard = Boolean(displayDocument?.dirty);
     if (!append && discard && !window.confirm('Open another project and discard unsaved changes?')) return;
-    void action(async () => { await flushEdits(); await typography.abandon(); const client = api ?? await connect(); setApi(client);
-      const next = openingProject ? await client.upload(files[0],discard) : await client.uploadPages(files,append,discard);
+    void action(async () => {
+      await flushEdits();
+      await typography.abandon();
+      const client = api ?? await connect();
+      setApi(client);
+      let next: State;
+      if (openingProject) {
+        setOperation('Opening project…');
+        setOperationProgress(undefined);
+        next = await client.upload(files[0], discard);
+      } else if (files.length === 1) {
+        setOperation('Importing image (1/1)…');
+        setOperationProgress(1);
+        next = await client.uploadPages(files, append, discard);
+      } else {
+        const sortedFiles = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+        const total = sortedFiles.length;
+        let lastState: State | null = null;
+        for (let i = 0; i < total; i++) {
+          const pageNum = i + 1;
+          setOperation(`Importing images (${pageNum}/${total})…`);
+          setOperationProgress(pageNum / total);
+          const isFirst = i === 0;
+          lastState = await client.uploadPages([sortedFiles[i]], append || !isFirst, discard && isFirst);
+        }
+        next = lastState!;
+      }
       frames.clearCache();
-      await refresh(client,true,next,()=>{resetSelection(); setQueuedPages(new Set()); if (!append) setDetectAll(false); setTool('select'); viewport.reset();});
-    }, openingProject ? 'Opening project…' : `Importing ${files.length === 1 ? '1 image' : `${files.length} images`}…`);
+      await refresh(client, true, next, () => {
+        resetSelection();
+        setQueuedPages(new Set());
+        if (!append) setDetectAll(false);
+        setTool('select');
+        viewport.reset();
+      });
+    }, openingProject ? 'Opening project…' : `Importing images (1/${files.length})…`);
   };
   const switchPage = (id: string) => {
     if (!api || jobActive || (busy && !navigation.running)) return;
@@ -811,7 +843,7 @@ export default function App() {
         </section>
       </InspectorDock><DockResizeHandle side="right" width={rightWidth} minimum={280} maximum={320} onResize={setRightWidth} /></div>}
     </main>
-    {operationMessage && <div className="operation-overlay"><div className="operation-card"><div className="operation-spinner" role="progressbar" /><p role="status">{operationMessage}</p><progress aria-label="Operation progress" max={1} value={activeJob && typeof activeJob.progress === 'number' && activeJob.progress > 0 ? Math.min(1, activeJob.progress) : undefined} />{activeJob && <button disabled={activeJob.cancelRequested} onClick={() => { if (api) void api.post(`/v1/jobs/${activeJob.id}/cancel`).catch(reportError); }}>{activeJob.cancelRequested ? 'Cancelling…' : 'Cancel'}</button>}</div></div>}
+    {operationMessage && <div className="operation-overlay"><div className="operation-card"><div className="operation-spinner" role="progressbar" /><p role="status">{operationMessage}</p><progress aria-label="Operation progress" max={1} value={activeJob && typeof activeJob.progress === 'number' && activeJob.progress > 0 ? Math.min(1, activeJob.progress) : operationProgress} />{activeJob && <button disabled={activeJob.cancelRequested} onClick={() => { if (api) void api.post(`/v1/jobs/${activeJob.id}/cancel`).catch(reportError); }}>{activeJob.cancelRequested ? 'Cancelling…' : 'Cancel'}</button>}</div></div>}
     <EngineStatusBar activeBubbleLabel={activeBubbleLabel} bubbleSummary={bubbleSummary} zoom={document && <ViewportZoomControls controller={viewport} />} connected={Boolean(api)} document={displayDocument} job={state.job} selected={selected.size} tool={tool} controller={viewport} onCancel={() => api && state.job && void action(async () => { await api.post(`/v1/jobs/${state.job!.id}/cancel`); })} />
     {textEditor && <SourceTextDialog session={textEditor} busy={busy} error={textEditorError} onClose={() => { if (!busy) setTextEditor(null); }} onSave={value => void saveEditorText(value)} />}
     {settings && <PreferencesDialog api={api} needsGeminiKey={settings === 'gemini-key'} onClose={() => setSettings(false)} density={density} onDensity={setDensity} exportFormat={exportFormat} onExportFormat={setExportFormat} provider={provider} onProvider={setProvider} detectionMode={detectionMode} onDetectionMode={mode => { setDetectionMode(mode); setShowBoxes(true); resetSelection(); if (tool.startsWith('mask-')) setTool('select'); }} textMode={composition.text_mode ?? 'clean'} onTextMode={document && api ? mode => changeComposition({text_mode:mode}) : undefined} includeFreeText={includeFreeText} onIncludeFreeText={setIncludeFreeText} busy={busy || jobActive || regionGesture || Boolean(textEditor)} onReset={() => { setDensity('Balanced'); setLeftCollapsed(window.innerWidth < 1120); setRightCollapsed(false); setLeftWidth(220); setRightWidth(300); viewport.reset(); }} />}

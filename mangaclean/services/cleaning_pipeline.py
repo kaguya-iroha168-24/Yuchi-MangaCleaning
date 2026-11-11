@@ -206,7 +206,7 @@ def prepare_text_selection(image, rect, bubble=None, padding=3):
     areas = candidates[1:, 4]
     if len(areas) > 40 and np.std(areas)/max(1, np.mean(areas)) < .2:
         raise ValueError('Repeated fine marks may be artwork or screentone. No artwork was changed.')
-    dilation_radius = 5 if bubble is None else 2
+    dilation_radius = 3 if bubble is None else 2
     local = dilate_mask(glyphs, dilation_radius) & safe
     if not np.any(local) or np.count_nonzero(local) > .85*rw*rh:
         raise ValueError('No reliable text mask in this box. Adjust the selection and try again.')

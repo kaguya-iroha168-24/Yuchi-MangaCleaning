@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 import cv2
 import numpy as np
 from backend.automatic_processing import clean_page
-from mangaclean.core.text_cleaning import restore_text, AUTO, TELEA, WHITE
+from mangaclean.core.text_cleaning import restore_text, AUTO, TELEA, WHITE, NS
 from mangaclean.services.cleaning_pipeline import prepare_text_selection
 from mangaclean.services.text_regions import locate_text, merge_text_candidates
 
@@ -110,7 +110,7 @@ def register(namespace):
                                     try:
                                         mask, interior = prepare_text_selection(working_img, rect, bubble=linked_bubble)
                                         if cv2.countNonZero(mask) > 0:
-                                            clean_method = m.WHITE if linked_bubble is not None else m.NS
+                                            clean_method = WHITE if linked_bubble is not None else NS
                                             clean_radius = 3.0 if linked_bubble is not None else 4.5
                                             res = restore_text(working_img, mask, method=clean_method, radius=clean_radius, interior=interior if linked_bubble is not None else None)
                                             if res.changed_pixels > 0:
@@ -139,7 +139,7 @@ def register(namespace):
                                                     fallback_interior[y0+1:y1-1, x0+1:x1-1] = 255
                                                     fallback_mask &= fallback_interior
                                                     if cv2.countNonZero(fallback_mask) > 0:
-                                                        clean_method = m.WHITE if linked_bubble is not None else m.NS
+                                                        clean_method = WHITE if linked_bubble is not None else NS
                                                         clean_radius = 3.0 if linked_bubble is not None else 4.5
                                                         res = restore_text(working_img, fallback_mask, method=clean_method, radius=clean_radius, interior=fallback_interior if linked_bubble is not None else None)
                                                         if res.changed_pixels > 0:
@@ -192,10 +192,11 @@ def register(namespace):
                         def on_detect_progress(subprogress, text=None):
                             with store.lock:
                                 if store.job and store.job['id'] == job:
-                                    store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (7/10)...',progress=base_progress + page_slice * 0.7)
-                        batch=namespace['detect_with_fallback'](payload.provider,source,working,payload.device,store.cancel)
-                        with store.lock:
-                            if store.job and store.job['id'] == job: store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (7/10)...',progress=base_progress + page_slice * 0.8)
+                                    val = float(subprogress) if isinstance(subprogress, (int, float)) else 0.5
+                                    frac = 0.4 + 0.38 * max(0.0, min(1.0, val))
+                                    step_num = min(9, max(4, round(frac * 10)))
+                                    store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting ({step_num}/10)...', progress=base_progress + page_slice * frac)
+                        batch = namespace['detect_with_fallback'](payload.provider, source, working, payload.device, store.cancel, on_progress=on_detect_progress)
                         with store.lock:
                             check(job,page_id);doc=store.require();store.capture()
                             doc.bubbles=[*manual_bubbles, *batch.bubbles[:200-len(manual_bubbles)]] if manual_bubbles else batch.bubbles

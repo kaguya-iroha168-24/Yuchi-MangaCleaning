@@ -33,8 +33,8 @@ def clip_rect(rect: Rect, shape: tuple[int, ...]) -> Rect:
 
 def dilate_mask(mask: np.ndarray, radius: int = 1) -> np.ndarray:
     """Cover anti-aliased glyph edges with a small elliptical dilation."""
-    if not 0 <= radius <= 3:
-        raise ValueError('Mask dilation must be between 0 and 3 pixels.')
+    if not 0 <= radius <= 8:
+        raise ValueError('Mask dilation must be between 0 and 8 pixels.')
     if radius == 0:
         return mask.copy()
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1,) * 2)

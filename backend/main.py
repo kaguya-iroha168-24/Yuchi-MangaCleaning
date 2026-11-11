@@ -30,7 +30,7 @@ from mangaclean.core.region_graph import RegionGraph, TextRegion
 from mangaclean.core.dialogue import Dialogue, manga_lettering
 from mangaclean.core.composition import page_composition
 from mangaclean.core.ocr_result import update_source_region
-from mangaclean.core.text_cleaning import AUTO, TELEA, WHITE, restore_text, selection_mask
+from mangaclean.core.text_cleaning import AUTO, TELEA, WHITE, NS, restore_text, selection_mask
 from mangaclean.services.bubble_geometry import reframe_bubble
 from mangaclean.services.cleaning_pipeline import automatic_clean_safety, execute, prepare_bubble, prepare_text_selection
 from mangaclean.services.detection import OPENCV, SHIMA, detect
@@ -733,7 +733,7 @@ class CleanRequest(BaseModel):
 
 def apply_clean(payload: CleanRequest, check_cancel=None):
     """Commit a validated mask under store.lock; shared by explicit and queued cleaning."""
-    if payload.method not in {AUTO, TELEA, WHITE}: raise HTTPException(400, "Metode cleaning tidak valid.")
+    if payload.method not in {AUTO, TELEA, WHITE, NS}: raise HTTPException(400, "Metode cleaning tidak valid.")
     doc = store.require(); preview = store.preview
     if doc.composition.get('artwork_locked'): raise HTTPException(409, 'Unlock the working artwork to clean or heal it.')
     if preview is None or preview["id"] != payload.previewId or preview["revision"] != doc.revision:

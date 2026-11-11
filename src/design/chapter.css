@@ -113,14 +113,16 @@
 }
 
 .pipeline-pill-toggle.active {
-  color: var(--studio-accent);
-  background: var(--studio-tint);
+  color: var(--studio-accent) !important;
+  background: var(--studio-tint) !important;
   font-weight: 600;
 }
 
 .pipeline-pill-toggle.active:hover:not(:disabled) {
-  color: var(--studio-accent);
-  background: rgba(239, 68, 68, 0.22);
+  color: #ff8585 !important;
+  background: rgba(239, 68, 68, 0.28) !important;
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.6) !important;
+  font-weight: 600;
 }
 
 .pipeline-action-btn {
