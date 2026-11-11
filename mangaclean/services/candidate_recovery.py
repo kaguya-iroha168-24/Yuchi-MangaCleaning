@@ -25,14 +25,16 @@ def duplicate(a,b):
 def recover(batch,source,working,cancel,scan,progress,cancelled):
     started=perf_counter();height,width=source.shape[:2];primary=list(batch.bubbles)
     proposals=[]
-    for b in detect_bubbles(working,2):
-        x,y,w,h=b.rect
-        if 1.8<=h/w<=5 and min(w,h)>=24 and b.glyph_count>=2 and not any(containment((x,y,x+w,y+h),bounds(p))>.7 for p in primary):proposals.append(b)
-    proposals=sorted(proposals,key=lambda b:-b.glyph_count)[:6]
+    # If primary detector already found many bubbles (>=8), skip heavy crop proposals
+    if len(primary) < 8 and perf_counter() - started < 3:
+        for b in detect_bubbles(working,2):
+            x,y,w,h=b.rect
+            if 1.8<=h/w<=5 and min(w,h)>=24 and b.glyph_count>=2 and not any(containment((x,y,x+w,y+h),bounds(p))>.7 for p in primary):proposals.append(b)
+        proposals=sorted(proposals,key=lambda b:-b.glyph_count)[:2]
     added=[];runs=[];limited=False
     for index,b in enumerate(proposals):
         if cancel.is_set():raise cancelled('Scan cancelled before secondary inference.')
-        if perf_counter()-started>20:limited=True;break
+        if perf_counter()-started>3:limited=True;break
         if progress:progress(.45+.45*index/max(1,len(proposals)),f'Verifying automatic region {index+1}/{len(proposals)}')
         x,y,w,h=b.rect;cw=min(width,max(320,round(width*.5)));ch=min(height,max(512,round(height*.4375)))
         cx=max(0,min(width-cw,round(x+w/2-cw/2)));cy=max(0,min(height-ch,round(y-(ch-h)/3)))
@@ -54,5 +56,5 @@ def recover(batch,source,working,cancel,scan,progress,cancelled):
     if cancel.is_set():raise cancelled('Scan cancelled; secondary results discarded.')
     batch.bubbles=[*primary,*added]
     batch.metadata.update(candidate_count=len(batch.bubbles),adapter_count=len(batch.bubbles),
-        automatic_recovery={'experimental':True,'primary_count':len(primary),'added_count':len(added),'proposal_count':len(proposals),'runs':runs,'seconds':perf_counter()-started,'budget_limited':limited,'max_regions':6,'between_pass_budget_seconds':20})
+        automatic_recovery={'experimental':True,'primary_count':len(primary),'added_count':len(added),'proposal_count':len(proposals),'runs':runs,'seconds':perf_counter()-started,'budget_limited':limited,'max_regions':6,'between_pass_budget_seconds':3})
     return batch

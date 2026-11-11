@@ -46,7 +46,7 @@ class Chapter:
         if any(p['id']==identifier for p in self.pages):
             doc.region_graph.page_id=identifier=uuid4().hex
         page=self._page(doc)
-        save_project(self.folder/(identifier+'.mangaclean'),dict(doc.snapshot(),clean=None if raw else doc.working),fast_raster=raw)
+        save_project(self.folder/(identifier+'.mangaclean'),dict(doc.snapshot(),clean=None if raw else doc.working,document=doc),fast_raster=raw)
         self.pages.append(page)
         return identifier
 
@@ -54,7 +54,7 @@ class Chapter:
     def _page(doc):
         height,width=doc.source.shape[:2]
         thumb=cv2.resize(doc.source,(max(1,round(width*min(160/width,200/height))),max(1,round(height*min(160/width,200/height)))))
-        ok,png=cv2.imencode('.png',thumb)
+        ok,png=cv2.imencode('.png',thumb,[cv2.IMWRITE_PNG_COMPRESSION,1])
         if not ok:raise ValueError('Thumbnail encoding failed.')
         return dict(id=doc.region_graph.page_id,name=Path(doc.source_name).name,width=width,height=height,
                   dirty=True,revision=doc.revision,bubbles=len(doc.bubbles),savedPath=None,

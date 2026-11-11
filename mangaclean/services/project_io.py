@@ -50,18 +50,23 @@ def save_project(path, snapshot, overwrite=False, *, fast_raster=False):
     handle, temp = tempfile.mkstemp(prefix='.mangaclean-', suffix='.tmp', dir=target.parent)
     os.close(handle)
     def encode_png(array):
-        ok, encoded = cv2.imencode('.png', array)
+        params = [cv2.IMWRITE_PNG_COMPRESSION, 1] if fast_raster else [cv2.IMWRITE_PNG_COMPRESSION, 3]
+        ok, encoded = cv2.imencode('.png', array, params)
         if not ok: raise ValueError('Could not encode project image.')
         return encoded.tobytes()
     def png(package, name, array):
         package.writestr(name, encode_png(array))
     try:
-        with zipfile.ZipFile(temp, 'w', zipfile.ZIP_DEFLATED) as package:
+        zip_compression = zipfile.ZIP_STORED if fast_raster else zipfile.ZIP_DEFLATED
+        with zipfile.ZipFile(temp, 'w', zip_compression) as package:
             original = encode_png(snapshot['source'])
             working = encode_png(snapshot['clean']) if snapshot['clean'] is not None else original
-            compression = zipfile.ZIP_STORED if fast_raster else zipfile.ZIP_DEFLATED
-            package.writestr('original.png', original, compress_type=compression)
-            package.writestr('working.png', working, compress_type=compression)
+            if 'document' in snapshot and snapshot['document'] is not None:
+                doc = snapshot['document']
+                doc._encoded_source = original
+                doc._encoded_source_id = id(snapshot['source'])
+            package.writestr('original.png', original)
+            package.writestr('working.png', working)
             png(package,'mask.png',snapshot['mask'])
             if snapshot['manual_mask'] is not None:
                 png(package,'manual.png',snapshot['manual_mask'])

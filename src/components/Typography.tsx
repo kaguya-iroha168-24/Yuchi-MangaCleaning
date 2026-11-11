@@ -80,7 +80,7 @@ function TextColor({ value, disabled, onValue, onCommit, label = 'Text color' }:
 const sizePresetsKey = 'yuchi-tauri-font-size-presets';
 const emptyDialogue: Dialogue = { id: '', text: '', bubble_id: null, source_region_id: null, x: 0, y: 0, width: 160, height: 80, family: 'Arial', size: 22, weight: 400, minimum_size: 12, color: '#111111', alignment: 'center', visible: true, auto_fit: true, padding: 8, style: {} };
 
-export function TypographyControls({ api, session, selected, disabled: unavailable, onDelete, sourceControls, sourceOptions }: { api: Api | null; session: TypographySession; selected: Dialogue | null; disabled: boolean; onCreate: () => void; onDelete: (id: string) => void; sourceControls: React.ReactNode; sourceOptions?: React.ReactNode }) {
+export function TypographyControls({ api, session, selected, disabled: unavailable, onDelete, sourceControls, sourceOptions, bubbleHeader, onApprove, approveDisabled }: { api: Api | null; session: TypographySession; selected: Dialogue | null; disabled: boolean; onCreate?: () => void; onDelete: (id: string) => void; sourceControls: React.ReactNode; sourceOptions?: React.ReactNode; bubbleHeader?: React.ReactNode; onApprove?: () => void; approveDisabled?: boolean }) {
   const live = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const [fonts, setFonts] = useState<FontEntry[]>([]);
   const [fontError, setFontError] = useState('');
@@ -128,9 +128,17 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
     });
   };
   return <div className="typography-properties" data-typography-inspector="true">
-    {Boolean(sourceControls || selectedText || sourceOptions) && <details className="property-group" open><summary>Translation</summary><div className="property-fields">
+    {Boolean(sourceControls || selectedText || sourceOptions || bubbleHeader) && <details className="property-group" open><summary>Translation</summary><div className="property-fields">
+      {bubbleHeader}
       {sourceControls}
-      {selectedText && <label>Translation<textarea id="typography-text" aria-label="Typeset dialogue text" maxLength={4000} value={text.text} disabled={disabled} onChange={event => change({ text: event.target.value })} onBlur={commit} /></label>}
+      {selectedText && <div className="translation-field-container">
+        <div className="field-header-row">
+          <label htmlFor="typography-text">Translation</label>
+          <span className="char-counter">{text.text.length} chars</span>
+        </div>
+        <textarea id="typography-text" aria-label="Typeset dialogue text" maxLength={4000} value={text.text} disabled={disabled} onChange={event => change({ text: event.target.value })} onBlur={commit} placeholder="Enter Indonesian dialogue…" />
+      </div>}
+      {onApprove && <div className="approve-action"><button type="button" className="approve-button" disabled={approveDisabled || disabled} onClick={onApprove} title="Approve and move to next bubble (Ctrl+Enter)">✓ Approve (Ctrl+Enter)</button></div>}
       {sourceOptions}</div></details>}
 
     <details className="property-group" open><summary>Typography</summary><div className="property-fields">
@@ -203,6 +211,25 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
       {live.errors[text.id] && <p role="alert" className="warning-note">{live.errors[text.id]}</p>}
       <button className="studio-action" disabled={disabled} onClick={() => { if (selectedText) onDelete(text.id); }}>Delete text layer</button>
     </div>
+    </div></details>
+
+    <details className="property-group" open><summary>Bubble Shape & Style</summary><div className="property-fields">
+      <label>Shape<select aria-label="Bubble shape preset" disabled={disabled}>
+        <option value="rounded">Rounded Rectangle</option>
+        <option value="rect">Rectangle</option>
+        <option value="ellipse">Ellipse</option>
+        <option value="cloud">Cloud / Thought</option>
+        <option value="spiky">Spiky / Shout</option>
+      </select></label>
+      <div className="shape-preset-grid" role="group" aria-label="Roundness presets">{['0', '20', '50', '70', 'MAX'].map(r => <button key={r} type="button" disabled={disabled} title={`Roundness ${r}%`}>{r}</button>)}</div>
+      <div className="control-pair">
+        <NativeNumber label="Padding (px)" value={text.padding} min={0} max={128} disabled={disabled} onValue={padding => change({ padding })} onCommit={commit} />
+        <NativeNumber label="Outline width" value={style.stroke_width ?? 0} min={0} max={24} disabled={disabled} onValue={stroke_width => changeStyle({ stroke_width })} onCommit={commit} />
+      </div>
+      <div className="type-metrics">
+        <TextColor label="Fill color" value="#ffffff" disabled={disabled} onValue={() => {}} onCommit={commit} />
+        <TextColor label="Outline color" value={style.stroke_color ?? '#000000'} disabled={disabled} onValue={stroke_color => changeStyle({ stroke_color })} onCommit={commit} />
+      </div>
     </div></details>
 
   </div>;

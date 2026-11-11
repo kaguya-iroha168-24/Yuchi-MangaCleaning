@@ -121,6 +121,13 @@ class TextDetectionMode(unittest.TestCase):
         finally:
             self.post('/v1/translation/settings', {'clear': True})
 
+    def test_detect_text_forwards_include_free_text_option(self):
+        self.detect.stop()
+        with patch('mangaclean.services.text_regions.detect_text_bubbles', return_value=self.boxes) as mock_detect:
+            self.post('/v1/detect-text', {'include_free_text': True})
+            self.wait()
+            mock_detect.assert_called_once_with(self.doc.source, include_free_text=True)
+
     def test_real_ogkalu_scan_and_save_reload_roundtrip(self):
         from io import BytesIO
         from pathlib import Path

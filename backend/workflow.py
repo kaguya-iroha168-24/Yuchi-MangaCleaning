@@ -9,7 +9,11 @@ import threading
 import time
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
+import cv2
+import numpy as np
 from backend.automatic_processing import clean_page
+from mangaclean.core.text_cleaning import restore_text, AUTO, TELEA, WHITE
+from mangaclean.services.cleaning_pipeline import prepare_text_selection
 from mangaclean.services.text_regions import locate_text, merge_text_candidates
 
 
@@ -22,6 +26,7 @@ class ScanRequest(BaseModel):
     detect_only: bool=False
     skip_ocr: bool=False
     output_mode: Literal['clean', 'overlay']='clean'
+    include_free_text: bool=False
 
 
 def bubble_text_rect(bubble):
@@ -62,23 +67,94 @@ def register(namespace):
                     base_progress = page_number * page_slice
                     store.job.update(stage='detect',currentPageId=page_id,editingAllowed=False,message=f'Processing page {page_number+1} of {len(ids)} - detecting (1/10)...',progress=base_progress + page_slice * 0.1)
                     if text_only:
-                        store.job['message'] = f'Locating text on page {page_number+1} of {len(ids)}'
                         source, bubbles = doc.source, tuple(doc.bubbles)
                 if text_only:
                     try:
-                        candidates = list(locate_text(source, bubbles))
                         with store.lock:
                             check(job, page_id)
+                            if store.job and store.job['id'] == job:
+                                store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (4/10)...', progress=base_progress + page_slice * 0.4)
+                        candidates = list(locate_text(source, bubbles, include_free_text=getattr(payload, 'include_free_text', False)))
+                        with store.lock:
+                            check(job, page_id)
+                            if store.job and store.job['id'] == job:
+                                store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (7/10)...', progress=base_progress + page_slice * 0.7)
                             doc = store.require()
                             graph = deepcopy(doc.region_graph)
                             count = merge_text_candidates(graph, candidates, doc.dialogues)
                             graph.validate(doc.source.shape, doc.bubbles)
-                            if graph != doc.region_graph:
-                                store.capture(('region_graph',))
-                                doc.region_graph = graph
+
+                            if store.job and store.job['id'] == job:
+                                store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (8/10)...', progress=base_progress + page_slice * 0.8)
+
+                            working_img = doc.working.copy()
+                            working_changed = False
+                            if not doc.composition.get('artwork_locked'):
+                                for region in graph.text_regions:
+                                    check(job, page_id)
+                                    rect = tuple(region.rect)
+                                    linked_bubble = None
+                                    if region.bubble_id:
+                                        b = next((b for b in doc.bubbles if b.id == region.bubble_id), None)
+                                        if b is not None:
+                                            bx, by, bw, bh = b.rect
+                                            rx, ry, rw, rh = rect
+                                            if rx >= bx and ry >= by and rx + rw <= bx + bw and ry + rh <= by + bh:
+                                                linked_bubble = b
+                                    try:
+                                        mask, interior = prepare_text_selection(working_img, rect, bubble=linked_bubble)
+                                        if cv2.countNonZero(mask) > 0:
+                                            res = restore_text(working_img, mask, method=m.AUTO, radius=3.0, interior=interior)
+                                            if res.changed_pixels > 0:
+                                                working_img = res.image
+                                                working_changed = True
+                                    except Exception:
+                                        try:
+                                            x, y, w, h = rect
+                                            H, W = working_img.shape[:2]
+                                            pad = 2
+                                            x0, y0 = max(0, x - pad), max(0, y - pad)
+                                            x1, y1 = min(W, x + w + pad), min(H, y + h + pad)
+                                            roi = working_img[y0:y1, x0:x1]
+                                            if roi.size > 0:
+                                                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                                                otsu_val, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+                                                thresh = min(205, max(30, int(otsu_val)))
+                                                ink = cv2.inRange(gray, 0, thresh)
+                                                if cv2.countNonZero(ink) > 0:
+                                                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                                                    dilated = cv2.dilate(ink, kernel)
+                                                    fallback_mask = np.zeros(working_img.shape[:2], dtype=np.uint8)
+                                                    fallback_mask[y0:y1, x0:x1] = dilated
+                                                    fallback_interior = np.zeros_like(fallback_mask)
+                                                    fallback_interior[y0+1:y1-1, x0+1:x1-1] = 255
+                                                    fallback_mask &= fallback_interior
+                                                    if cv2.countNonZero(fallback_mask) > 0:
+                                                        res = restore_text(working_img, fallback_mask, method=m.AUTO, radius=3.0, interior=fallback_interior)
+                                                        if res.changed_pixels > 0:
+                                                            working_img = res.image
+                                                            working_changed = True
+                                        except Exception:
+                                            pass
+
+                            graph_changed = (graph != doc.region_graph)
+                            if working_changed or graph_changed:
+                                keys_to_capture = []
+                                if graph_changed:
+                                    keys_to_capture.append('region_graph')
+                                if working_changed:
+                                    keys_to_capture.append('working')
+                                store.capture(tuple(keys_to_capture))
+                                if graph_changed:
+                                    doc.region_graph = graph
+                                if working_changed:
+                                    doc.working = working_img
                                 doc.revision += 1
                                 doc.dirty = True
                                 store.preview = None
+
+                            if store.job and store.job['id'] == job:
+                                store.job.update(message=f'Processing page {page_number+1} of {len(ids)} - detecting (10/10)...', progress=base_progress + page_slice * 1.0)
                             text_regions += count
                             processed += 1
                     except (m.OCRCancelled, m.DetectionCancelled):

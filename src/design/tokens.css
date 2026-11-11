@@ -1,29 +1,71 @@
 :root {
   color-scheme: dark;
-  --studio-primary: #151619;
-  --studio-panel: #1C1D21;
-  --studio-elevated: #27292E;
-  --studio-hover: #33353C;
-  --studio-border: #525660;
-  --studio-line: #8E9AAF;
-  --studio-accent: #E63946;
-  --studio-accent-hover: #ED5964;
+
+  /* Dark Pro Studio Surface Tokens (YuchiDesain.md & Atelier Calibration) */
+  --bg-app:        #121214; /* Latar utama / area kanvas */
+  --bg-panel:      #18181B; /* Toolbar, sidebar, inspector, status bar */
+  --bg-elevated:   #1F1F23; /* Input, accordion header, dropdown, cards */
+  --bg-hover:      #26262B;
+  --bg-active:     #2E2E34;
+  --border:        #27272A;
+  --border-strong: #3F3F46;
+
+  /* Typography Colors */
+  --text-primary:   #F4F4F5;
+  --text-secondary: #A1A1AA;
+  --text-muted:     #71717A;
+  --text-disabled:  #52525B;
+
+  /* Accent (Crimson Atelier) */
+  --accent:        #EF4444; /* Bounding box aktif, status bar badge, tab aktif */
+  --accent-hover:  #F87171;
+  --accent-subtle: rgba(239, 68, 68, 0.12);
+  --focus-ring:    rgba(239, 68, 68, 0.55);
+
+  /* Semantic Bubble Status */
+  --status-raw:      #EF4444; /* Merah  — Raw / Terdeteksi, belum diapprove */
+  --status-draft:    #EAB308; /* Kuning — Draft terjemahan / Inpainting selesai */
+  --status-done:     #22C55E; /* Hijau  — Typeset & Approved */
+  --status-error:    #F97316; /* Oranye — Overflow / Gagal OCR / Gagal render */
+  --status-excluded: #52525B; /* Abu    — Dikecualikan (SFX) */
+
+  /* Canvas overlays */
+  --mask-overlay:  rgba(239, 68, 68, 0.35);
+  --heal-brush:    rgba(59, 130, 246, 0.45);
+  --selection-bg:  rgba(239, 68, 68, 0.08);
+
+  /* Glassmorphic floating surfaces */
+  --glass-bg:      rgba(24, 24, 27, 0.88);
+  --glass-border:  rgba(63, 63, 70, 0.75);
+  --glass-shadow:  0 12px 36px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+
+  /* Studio Theme Mappings */
+  --studio-primary: var(--bg-app);
+  --studio-panel: var(--bg-panel);
+  --studio-elevated: var(--bg-elevated);
+  --studio-hover: var(--bg-hover);
+  --studio-border: var(--border);
+  --studio-line: var(--border-strong);
+  --studio-accent: var(--accent);
+  --studio-accent-hover: var(--accent-hover);
   --studio-accent-ink: #FF8992;
-  --studio-on-accent: #000;
-  --studio-tint: #392328;
-  --studio-scrim: #0B0C0E99;
-  --studio-shadow: #0006;
+  --studio-on-accent: #FFFFFF;
+  --studio-tint: var(--accent-subtle);
+  --studio-scrim: #0B0C0ECC;
+  --studio-shadow: #00000088;
   --studio-cleaned: #AFB9CA;
-  --studio-translated: var(--studio-accent-ink);
-  --studio-ready: var(--studio-cleaned);
-  --studio-redraw: var(--studio-accent-ink);
-  --studio-canvas: #101113;
-  --studio-text: #F3F3F5;
-  --studio-muted: #B2B9C5;
-  --studio-header-height: 48px;
-  --studio-context-height: 40px;
-  --studio-rail-width: 48px;
-  --studio-navigator-width: 220px;
-  --studio-inspector-width: 360px;
+  --studio-translated: var(--accent);
+  --studio-ready: var(--status-done);
+  --studio-redraw: var(--accent-hover);
+  --studio-canvas: var(--bg-app);
+  --studio-text: var(--text-primary);
+  --studio-muted: var(--text-secondary);
+
+  /* Layout Dimensions (Strict CLS-Free) */
+  --studio-header-height: 44px;
+  --studio-context-height: 36px;
+  --studio-rail-width: 44px;
+  --studio-navigator-width: 180px;
+  --studio-inspector-width: 320px;
   --studio-status-height: 28px;
 }

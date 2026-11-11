@@ -111,14 +111,22 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .canvas-header { height: 38px; padding: 0 12px; background: var(--studio-primary); border-color: var(--studio-border); }
 .canvas-header .eyebrow { display: none; }
 .canvas-header h1 { font-size: 11px; margin: 0; }
-.pane-caption { height: 27px; background: var(--studio-panel); border-color: var(--studio-border); color: var(--studio-text); }
-.pane-indicator { background: var(--studio-accent); }
-.pane-dimensions { color: var(--studio-muted); }
-.dual-canvas { background: var(--studio-border); }
+.pane-caption { height: 28px; background: var(--studio-panel); border-bottom: 1px solid var(--studio-border); color: var(--studio-muted); display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; user-select: none; }
+.pane-indicator { width: 6px; height: 6px; border-radius: 50%; background: var(--studio-accent); }
+.pane-indicator.editing { background: var(--status-done); }
+.pane-dimensions { margin-left: auto; font-size: 9px; font-weight: 500; color: var(--studio-muted); letter-spacing: 0; }
+.dual-canvas { background: var(--studio-border); position: relative; }
 .canvas-pane, .stage-host { background: var(--studio-canvas); }
+.floating-canvas-pill { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 25; display: flex; align-items: center; gap: 3px; padding: 3px 6px; background: var(--glass-bg, rgba(24, 24, 27, 0.88)); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid var(--glass-border, rgba(63, 63, 70, 0.75)); border-radius: 9999px; box-shadow: var(--glass-shadow, 0 10px 30px rgba(0,0,0,0.6)); pointer-events: auto; user-select: none; }
+.floating-canvas-pill .pill-group { display: flex; align-items: center; gap: 1px; }
+.floating-canvas-pill .pill-btn { height: 26px; min-width: 26px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 9999px; background: transparent; color: var(--studio-muted); font-size: 11px; font-weight: 550; cursor: pointer; transition: all 150ms ease; }
+.floating-canvas-pill .pill-btn:hover:not(:disabled) { color: var(--studio-text); background: var(--studio-hover); }
+.floating-canvas-pill .pill-btn.active { color: #FFFFFF; background: var(--studio-accent); font-weight: 650; box-shadow: 0 1px 6px rgba(239, 68, 68, 0.4); }
+.floating-canvas-pill .pill-readout { font-variant-numeric: tabular-nums; font-size: 11px; font-weight: 600; color: var(--studio-text); padding: 0 6px; min-width: 44px; }
+.floating-canvas-pill .pill-separator { width: 1px; height: 14px; background: var(--studio-border-strong, #3F3F46); margin: 0 3px; }
 .canvas-controls .icon-button { height: 25px; width: 25px; }
 .canvas-controls button { height: 25px; font-size: 10px; }
-.canvas-corner { border-color: var(--studio-line); color: var(--studio-text); background: var(--studio-elevated); }
+.canvas-corner { display: none; }
 .canvas-footer { height: 24px; padding: 0 10px; gap: 10px; color: var(--studio-muted); background: var(--studio-panel); border-color: var(--studio-border); }
 .empty-workspace { background: var(--studio-canvas); }
 .empty-grid { display: none; }

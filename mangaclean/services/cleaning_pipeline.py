@@ -130,13 +130,40 @@ def boundary_ink_mask(gray, safe, padding=2):
     return dilate_mask(protected[labels], max(2, padding))
 
 
-def prepare_text_selection(image, rect, bubble=None):
+def prepare_text_selection(image, rect, bubble=None, padding=3):
     x, y, w, h = selection_rect(image, rect)
-    roi = image[y:y+h, x:x+w]
+    H, W = image.shape[:2]
+    x0 = max(0, x - padding)
+    y0 = max(0, y - padding)
+    x1 = min(W, x + w + padding)
+    y1 = min(H, y + h + padding)
+    rw, rh = x1 - x0, y1 - y0
+
+    roi = image[y0:y1, x0:x1]
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    if np.mean(gray >= 205) < .70:
-        raise ValueError('This text box does not have a reliably light background. No artwork was changed.')
-    glyphs = selection_mask(roi, (0, 0, w, h), padding=0).mask
+    is_light = float(np.mean(gray >= 205)) >= 0.70
+
+    glyphs = None
+    if is_light:
+        try:
+            glyphs = selection_mask(roi, (0, 0, rw, rh), padding=0).mask
+        except ValueError:
+            glyphs = None
+
+    threshold = 205
+    if glyphs is None or not np.any(glyphs):
+        otsu_val, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+        threshold = min(205, max(30, int(otsu_val)))
+        ink = cv2.inRange(gray, 0, threshold)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+        keep = np.zeros(count, np.uint8)
+        for k in range(1, count):
+            cx, cy, cw, ch, area = map(int, stats[k])
+            if (cx <= 0 or cy <= 0 or cx+cw >= rw or cy+ch >= rh or area < 2 or area > .5*rw*rh):
+                continue
+            keep[k] = 255
+        glyphs = keep[labels]
+
     safe = np.full_like(gray, 255)
     safe[[0, -1], :] = 0
     safe[:, [0, -1]] = 0
@@ -144,18 +171,28 @@ def prepare_text_selection(image, rect, bubble=None):
         bx, by, bw, bh = bubble.rect
         if x < bx or y < by or x+w > bx+bw or y+h > by+bh:
             raise ValueError('Keep the linked text box inside its bubble before cleaning.')
-        safe &= bubble.interior[y-by:y-by+h, x-bx:x-bx+w]
+        overlap_x0 = max(0, bx - x0)
+        overlap_y0 = max(0, by - y0)
+        overlap_x1 = min(rw, bx + bw - x0)
+        overlap_y1 = min(rh, by + bh - y0)
+        if overlap_x1 > overlap_x0 and overlap_y1 > overlap_y0:
+            sub_safe = np.zeros_like(safe)
+            sub_interior = bubble.interior[max(0, y0 - by):max(0, y0 - by) + (overlap_y1 - overlap_y0),
+                                           max(0, x0 - bx):max(0, x0 - bx) + (overlap_x1 - overlap_x0)]
+            sub_safe[overlap_y0:overlap_y1, overlap_x0:overlap_x1] = sub_interior
+            safe &= sub_safe
 
     # Use complete ink components before clipping, so an outline that crosses
     # the box or bubble interior is never treated as a detached glyph.
-    ink = cv2.inRange(gray, 0, 205)
+    ink_limit = 205 if is_light else threshold
+    ink = cv2.inRange(gray, 0, ink_limit)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(ink)
     protected = np.zeros(count, np.uint8)
     protected[np.unique(labels[safe == 0])] = 255
     protected[0] = 0
     for k, (_, _, cw, ch, area) in enumerate(stats[1:], 1):
-        if (cw >= .88*w or ch >= .88*h or area > .24*w*h
-                or (cw >= .45*w and cw >= 8*ch) or (ch >= .45*h and ch >= 8*cw)):
+        if (cw >= .88*rw or ch >= .88*rh or area > .24*rw*rh
+                or (cw >= .45*rw and cw >= 8*ch) or (ch >= .45*rh and ch >= 8*cw)):
             protected[k] = 255
     safe &= cv2.bitwise_not(dilate_mask(protected[labels], 2))
     glyphs &= safe
@@ -164,12 +201,12 @@ def prepare_text_selection(image, rect, bubble=None):
     if len(areas) > 40 and np.std(areas)/max(1, np.mean(areas)) < .2:
         raise ValueError('Repeated fine marks may be artwork or screentone. No artwork was changed.')
     local = dilate_mask(glyphs, 2) & safe
-    if not np.any(local) or np.count_nonzero(local) > .52*w*h:
+    if not np.any(local) or np.count_nonzero(local) > .52*rw*rh:
         raise ValueError('No reliable text mask in this box. Adjust the selection and try again.')
     mask = np.zeros(image.shape[:2], np.uint8)
     interior = np.zeros_like(mask)
-    mask[y:y+h, x:x+w] = local
-    interior[y:y+h, x:x+w] = safe
+    mask[y0:y1, x0:x1] = local
+    interior[y0:y1, x0:x1] = safe
     return mask, interior
 
 

@@ -1,7 +1,7 @@
 import type { ChapterState, Job } from '../api';
 
 export function refreshJobImages(job: Job): boolean {
-  return ['done','cancelled','failed'].includes(job.status) && (job.type==='process' || (job.status==='done' && !['ocr','translate','detect-bubbles','detect-text'].includes(job.type)));
+  return ['done','cancelled','failed'].includes(job.status) && (job.type==='process' || job.type==='detect-text' || (job.status==='done' && !['ocr','translate','detect-bubbles'].includes(job.type)));
 }
 
 export function processingPageIds(scope: string, chapter: ChapterState | null | undefined, selected: Set<string>): string[] {

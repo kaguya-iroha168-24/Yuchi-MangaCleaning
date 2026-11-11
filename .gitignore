@@ -14,3 +14,5 @@ outputs/
 *.tsbuildinfo
 releases/
 MangaClean.lnk
+models/
+replica-skill-main/

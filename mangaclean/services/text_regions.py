@@ -71,9 +71,10 @@ def text_layout_rect(region, bubble):
     return region.rect
 
 
-def locate_text(image, bubbles):
+def locate_text(image, bubbles, include_free_text=False):
     """Detect on the original page and link to a containing bubble when available."""
-    for rect, score in detect_text_bubbles(image):
+    detections = detect_text_bubbles(image, include_free_text=include_free_text) if include_free_text else detect_text_bubbles(image)
+    for rect, score in detections:
         containing = [bubble for bubble in bubbles if overlap(rect, bubble.rect)[1] == 1]
         bubble = min(containing, key=lambda b: b.rect[2] * b.rect[3], default=None)
         if bubble is None or not bubble.provenance.get('excluded'):

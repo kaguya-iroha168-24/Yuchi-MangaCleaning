@@ -16,6 +16,25 @@ function useSize(ref: React.RefObject<HTMLDivElement | null>) {
   return size;
 }
 
+export function FloatingCanvasToolbar({ controller }: { controller: ViewportController }) {
+  const view = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  const { scale } = useSyncExternalStore(controller.subscribeMetrics, controller.getMetrics);
+  return <aside className="floating-canvas-pill" role="toolbar" aria-label="Canvas viewport controls" onPointerDown={event => event.stopPropagation()}>
+    <div className="pill-group pill-zoom">
+      <button type="button" className="pill-btn" title="Zoom out (−)" aria-label="Zoom out" onClick={() => controller.zoomBy(1 / 1.2)}>−</button>
+      <button type="button" className="pill-btn pill-readout" title="Reset zoom to 100%" onClick={() => controller.actualScale(1.0)}>{Math.round(scale * 100)}%</button>
+      <button type="button" className="pill-btn" title="Zoom in (+)" aria-label="Zoom in" onClick={() => controller.zoomBy(1.2)}>+</button>
+      <button type="button" className="pill-btn pill-fit" title="Fit to page" aria-label="Fit to page" onClick={() => controller.fit('page')}>Fit</button>
+    </div>
+    <div className="pill-separator" />
+    <div className="pill-group pill-modes">
+      <button type="button" className={`pill-btn ${view.mode === 'dual' ? 'active' : ''}`} title="Synchronized Dual Canvas" aria-pressed={view.mode === 'dual'} onClick={() => controller.update({ mode: 'dual', peek: false })}>Split</button>
+      <button type="button" className={`pill-btn ${view.mode === 'single' ? 'active' : ''}`} title="Single Focus View" aria-pressed={view.mode === 'single'} onClick={() => controller.update({ mode: 'single', peek: false })}>Single</button>
+      <button type="button" className={`pill-btn ${view.mode === 'onion' ? 'active' : ''}`} title="Onion Skin Comparison" aria-pressed={view.mode === 'onion'} onClick={() => controller.update({ mode: 'onion', peek: false })}>Onion</button>
+    </div>
+  </aside>;
+}
+
 export function ViewportModeControls({ controller, disabled }: { controller: ViewportController; disabled: boolean }) {
   const view = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   return <span className="view-mode-controls" aria-label="View Modes">{(['single', 'dual', 'onion'] as ViewMode[]).map(mode => <button key={mode} disabled={disabled} className={view.mode === mode ? 'active' : ''} aria-pressed={view.mode === mode} title={mode === 'single' ? 'Single Canvas' : mode === 'dual' ? 'Synchronized Dual Viewport' : 'Onion-Skin Comparison'} onClick={() => controller.update({ mode, peek: false })}>{mode === 'onion' ? 'Onion-Skin' : mode === 'single' ? 'Single' : 'Dual'}</button>)}</span>;
@@ -58,6 +77,7 @@ type PaneProps = {
   width: number; height: number; scale: number; controller: ViewportController; bubbles: Bubble[]; textRegions: TextRegion[]; selected: Set<string>; selectedTextId: string | null;
   tool: 'select' | 'pan' | 'manual' | 'text' | 'mask-add' | 'mask-erase'; brushRadius: number; showRulers: boolean; showBoxes: boolean; showMask: boolean; onion: boolean;
   detectionMode: DetectionMode; interaction: RegionInteraction; editable: boolean; showRegions: boolean; showSelection: boolean;
+  bubbleStatuses?: Record<string, 'raw' | 'draft' | 'done' | 'error' | 'excluded'>;
   onCommitBubble: (id: string, rect: RegionRect) => Promise<void>; onDeselect: () => void; onEditText: (region: TextRegion) => void; onCommitRegion: (id: string, rect: RegionRect) => Promise<void>; onGesture: (active: boolean) => void;
   onBubble: (id: string, multi: boolean) => void; onText: (id: string) => void; onRect: (rect: [number, number, number, number]) => void; onBrush?: (points: Point[]) => void; onEscape: () => void;
   typography: { session: TypographySession; dialogues: Dialogue[]; selected: string | null; visible: boolean; coverText?: boolean; onSelect: (id: string) => void; onEdit: (id: string) => void };
@@ -120,8 +140,7 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
         onPointerCancelCapture={stopRightDrag}
         onLostPointerCapture={event => { if (event.target === event.currentTarget) stopRightDrag(event); }}
         onContextMenu={event => event.preventDefault()}
-        onKeyDown={event => { if (event.key === 'Tab' && !event.shiftKey) { event.preventDefault(); event.stopPropagation(); props.controller.update({ peek: true }); } if (event.key === 'Escape') { props.controller.update({ peek: false }); props.onEscape(); } }}
-        onKeyUp={event => { if (event.key === 'Tab') { event.preventDefault(); props.controller.update({ peek: false }); } }}
+        onKeyDown={event => { if (event.key === 'Escape') { props.controller.update({ peek: false }); props.onEscape(); } }}
         onBlur={() => { if (props.controller.getSnapshot().peek) props.controller.update({ peek: false }); }}>
         <Stage ref={stage} width={size.width} height={size.height} scaleX={scale} scaleY={scale} x={offset.x} y={offset.y}
           onWheel={event => { event.evt.preventDefault(); const point = stage.current?.getPointerPosition() ?? { x: size.width / 2, y: size.height / 2 }; props.controller.update(zoomAt(view, event.evt.deltaY < 0 ? 1.11 : .9, point, size, props, scale)); }}
@@ -162,7 +181,7 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
           {brushEnabled && <Layer listening={false}><Circle ref={brushCursor} visible={false} radius={props.brushRadius} stroke="#E63946" strokeWidth={2 / scale} /></Layer>}
           {draft && <Layer listening={false}><Rect x={draft[0]} y={draft[1]} width={draft[2]} height={draft[3]} stroke="#B52837" strokeWidth={2 / scale} dash={[7 / scale, 4 / scale]} fill="rgba(230,57,70,.12)" /></Layer>}
         </Stage>
-        {!textMode && (props.showBoxes || selectedBubble) && !maskMode && (props.source==='original' || view.mode!=='dual' || layer==='bubble') && <TextRegionOverlay showHighlight={props.showSelection} selectionOnly={props.source==='original'} candidate regions={props.bubbles.filter(b=>(props.showBoxes && (props.source==='original' || view.mode!=='dual')) || b.id===selectedBubble).map(b => ({ id:b.id, rect:b.rect as RegionRect, text:'', number:props.bubbles.indexOf(b)+1 }))} reviewIds={new Set(props.bubbles.filter(b => b.confidence != null && b.confidence < .25).map(b => b.id))} selected={[...props.selected][0] ?? null} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='bubble'} controller={props.interaction} onSelect={id => props.onBubble(id,false)} onMultiSelect={props.onBubble} onEdit={() => {}} onCommit={props.onCommitBubble} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({point,source:props.source})} onWheel={event => {event.preventDefault();const bounds=host.current?.getBoundingClientRect();if(bounds) props.controller.update(zoomAt(view,event.deltaY<0?1.11:.9,{x:event.clientX-bounds.left,y:event.clientY-bounds.top},size,props,scale));}} />}
+        {!textMode && (props.showBoxes || selectedBubble) && !maskMode && (props.source==='original' || view.mode!=='dual' || layer==='bubble') && <TextRegionOverlay showHighlight={props.showSelection} selectionOnly={props.source==='original'} candidate regions={props.bubbles.filter(b=>(props.showBoxes && (props.source==='original' || view.mode!=='dual')) || b.id===selectedBubble).map(b => ({ id:b.id, rect:b.rect as RegionRect, text:'', number:props.bubbles.indexOf(b)+1, status: props.bubbleStatuses?.[b.id] ?? (b.excluded ? 'excluded' : 'raw') }))} reviewIds={new Set(props.bubbles.filter(b => b.confidence != null && b.confidence < .25).map(b => b.id))} selected={[...props.selected][0] ?? null} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='bubble'} controller={props.interaction} onSelect={id => props.onBubble(id,false)} onMultiSelect={props.onBubble} onEdit={() => {}} onCommit={props.onCommitBubble} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({point,source:props.source})} onWheel={event => {event.preventDefault();const bounds=host.current?.getBoundingClientRect();if(bounds) props.controller.update(zoomAt(view,event.deltaY<0?1.11:.9,{x:event.clientX-bounds.left,y:event.clientY-bounds.top},size,props,scale));}} />}
         {props.showRegions && !maskMode && (showTextBoxes || props.source==='editing' && props.activeLayer==='source') && <TextRegionOverlay
           numberedText={showTextBoxes} selectionOnly={props.source==='original'}
           showHighlight={props.showSelection && props.activeLayer==='source'}
@@ -182,6 +201,7 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
 export function CanvasWorkspace(props: {
   activeLayer: PaneProps['activeLayer']; controller: ViewportController; original: HTMLImageElement | null; working: HTMLImageElement | null; containers: HTMLImageElement | null; mask: HTMLImageElement | null;
   width: number; height: number; name: string; bubbles: Bubble[]; textRegions: TextRegion[]; selected: Set<string>; selectedTextId: string | null; tool: PaneProps['tool']; brushRadius: number; showRulers: boolean; showBoxes: boolean; showMask: boolean; showOriginal: boolean; showWorking: boolean;
+  bubbleStatuses?: Record<string, 'raw' | 'draft' | 'done' | 'error' | 'excluded'>;
   onCommitBubble: PaneProps['onCommitBubble']; onDeselect: () => void; detectionMode: DetectionMode; interaction: RegionInteraction; editable: boolean; showRegions: boolean; showSelection: boolean; onEditText: PaneProps['onEditText']; onCommitRegion: PaneProps['onCommitRegion']; onGesture: PaneProps['onGesture'];
   onBubble: PaneProps['onBubble']; onText: PaneProps['onText']; onRect: PaneProps['onRect']; onBrush: NonNullable<PaneProps['onBrush']>;
   typography: PaneProps['typography'];
@@ -194,10 +214,14 @@ export function CanvasWorkspace(props: {
   const scale = fitScale(area, props, view.fit, view.zoom);
   useEffect(() => { props.controller.updateMetrics({ ...area, imageWidth: props.width, imageHeight: props.height, scale }); }, [area.width, area.height, props.controller, props.width, props.height, scale]);
   useEffect(() => { const cancel = () => { if (props.controller.getSnapshot().peek) props.controller.update({ peek: false }); }; window.addEventListener('blur', cancel); return () => window.removeEventListener('blur', cancel); }, [props.controller]);
-  const common = { detectionMode: props.detectionMode, activeLayer: props.activeLayer, onCommitBubble: props.onCommitBubble, onDeselect: props.onDeselect, typography: props.typography, interaction: props.interaction, editable: props.editable, showRegions: props.showRegions, showSelection: props.showSelection, onEditText: props.onEditText, onCommitRegion: props.onCommitRegion, onGesture: props.onGesture, controller: props.controller, width: props.width, height: props.height, scale, bubbles: props.bubbles, textRegions: props.textRegions, selected: props.selected, selectedTextId: props.selectedTextId, tool: props.tool, brushRadius: props.brushRadius, showRulers: props.showRulers, showBoxes: props.showBoxes, containers: props.containers, onBubble: props.onBubble, onText: props.onText, onRect: props.onRect, onEscape: () => document.getElementById('canvas-zoom-out')?.focus() };
+  const common = { detectionMode: props.detectionMode, activeLayer: props.activeLayer, onCommitBubble: props.onCommitBubble, onDeselect: props.onDeselect, typography: props.typography, interaction: props.interaction, editable: props.editable, showRegions: props.showRegions, showSelection: props.showSelection, onEditText: props.onEditText, onCommitRegion: props.onCommitRegion, onGesture: props.onGesture, controller: props.controller, width: props.width, height: props.height, scale, bubbles: props.bubbles, textRegions: props.textRegions, selected: props.selected, selectedTextId: props.selectedTextId, tool: props.tool, brushRadius: props.brushRadius, showRulers: props.showRulers, showBoxes: props.showBoxes, containers: props.containers, bubbleStatuses: props.bubbleStatuses, onBubble: props.onBubble, onText: props.onText, onRect: props.onRect, onEscape: () => document.getElementById('canvas-zoom-out')?.focus() };
   return <>
     {view.mode === 'onion' && <div className="onion-controls"><label>Onion-Skin Comparison<input aria-label="Onion-Skin divider" type="range" min="0" max="100" value={Math.round(view.split * 100)} onChange={event => props.controller.update({ split: Number(event.target.value) / 100 })} /></label><span>Original ← → Editing</span></div>}
-    <div className={`dual-canvas viewport-panes mode-${view.mode}`} ref={host} role="region" aria-label={`Page canvas: ${props.name}`}>{view.mode === 'dual' && <CanvasPane {...common} title="ORIGINAL" source="original" image={props.showOriginal ? props.original : null} comparison={null} mask={null} showMask={false} onion={false} />}<CanvasPane {...common} title={view.mode === 'onion' ? 'ONION-SKIN COMPARISON' : 'EDITING'} source="editing" image={props.showWorking ? props.working : null} comparison={props.showOriginal ? props.original : null} mask={props.mask} showMask={props.showMask} onion={view.mode === 'onion'} onBrush={props.onBrush} /></div>
+    <div className={`dual-canvas viewport-panes mode-${view.mode}`} ref={host} role="region" aria-label={`Page canvas: ${props.name}`}>
+      {view.mode === 'dual' && <CanvasPane {...common} title="ORIGINAL" source="original" image={props.showOriginal ? props.original : null} comparison={null} mask={null} showMask={false} onion={false} />}
+      <CanvasPane {...common} title={view.mode === 'onion' ? 'ONION-SKIN COMPARISON' : 'TRANSLATED'} source="editing" image={props.showWorking ? props.working : null} comparison={props.showOriginal ? props.original : null} mask={props.mask} showMask={props.showMask} onion={view.mode === 'onion'} onBrush={props.onBrush} />
+      <FloatingCanvasToolbar controller={props.controller} />
+    </div>
   </>;
 }
 

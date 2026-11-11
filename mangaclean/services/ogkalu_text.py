@@ -32,7 +32,7 @@ def _session():
     return ort.InferenceSession(model_bytes, options, providers=['CPUExecutionProvider'])
 
 
-def detect_text_bubbles(image):
+def detect_text_bubbles(image, include_free_text=False):
     """Return scored text boxes in native page coordinates."""
     session = _session()
     from PIL import Image
@@ -44,9 +44,10 @@ def detect_text_bubbles(image):
     labels, boxes, scores = session.run(None, {
         'images': tensor, 'orig_target_sizes': np.array([[width, height]], dtype=np.int64),
     })
+    allowed_labels = (1, 2) if include_free_text else (1,)
     candidates = []
     for label, box, score in zip(labels[0], boxes[0], scores[0]):
-        if label != 1 or not isfinite(score) or score < CONFIDENCE or not np.isfinite(box).all():
+        if label not in allowed_labels or not isfinite(score) or score < CONFIDENCE or not np.isfinite(box).all():
             continue
         x1, y1, x2, y2 = box
         left, top = max(0, floor(x1)), max(0, floor(y1))

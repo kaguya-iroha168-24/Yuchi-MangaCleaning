@@ -64,6 +64,7 @@ export default function App() {
   const [typographyDirty, setTypographyDirty] = useState(false);
   const [activeLayer, setActiveLayer] = useState<'bubble' | 'source' | 'dialogue' | null>(null);
   const [selectedDialogueId, setSelectedDialogueId] = useState<string | null>(null);
+  const [approvedMap, setApprovedMap] = useState<Record<string, Set<string>>>({});
   const [showTypography, setShowTypography] = useState(true);
   const [density, setDensity] = useState<Density>(() => (localStorage.getItem('yuchi-tauri-density') as Density) || 'Balanced');
   const [settings, setSettings] = useState<boolean | 'gemini-key'>(false);
@@ -86,6 +87,7 @@ export default function App() {
   const [method, setMethod] = useState('Auto / Recommended');
   const [provider, setProvider] = useState('shima_v1');
   const [detectionMode, setDetectionMode] = useState<DetectionMode>(() => localStorage.getItem('yuchi-tauri-detection-mode') === 'text' ? 'text' : 'bubble');
+  const [includeFreeText, setIncludeFreeText] = useState<boolean>(() => localStorage.getItem('yuchi-tauri-include-free-text') !== 'false');
   const [, setInspector] = useState<'Review' | 'Cleaning' | 'Text'>('Review');
   const [manualRect, setManualRect] = useState<[number, number, number, number] | null>(null);
   const [text, setText] = useState('');
@@ -238,7 +240,7 @@ export default function App() {
       }
       if (job && (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') && completedJob.current !== `${job.id}:${job.status}`) {
         completedJob.current = `${job.id}:${job.status}`;
-        void refresh(api, refreshJobImages(job), undefined, undefined, false, false, job.type === 'detect-text').catch(reportError);
+        void refresh(api, refreshJobImages(job), undefined, undefined, job.type === 'detect-text', false, false).catch(reportError);
         if(job.status==='done' && ['process','detect-bubbles','detect-text'].includes(job.type))setSaveNotice(processingMessage(job));
         if(job.status==='done' && job.type==='translate') {
           const count = Number(job.result?.translatedRegions ?? 0);
@@ -253,8 +255,41 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem('yuchi-tauri-density', density); }, [density]);
   useEffect(() => { localStorage.setItem('yuchi-tauri-detection-mode', detectionMode); }, [detectionMode]);
+  useEffect(() => { localStorage.setItem('yuchi-tauri-include-free-text', String(includeFreeText)); }, [includeFreeText]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if (event.key === 'Tab' && document && !settings && !exportOpen && !textEditor && !busy && !running) {
+        event.preventDefault();
+        cycleBubble(event.shiftKey ? -1 : 1);
+        return;
+      }
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && document && !settings && !exportOpen && !textEditor && !busy && !running) {
+        event.preventDefault();
+        approveAndAdvance();
+        return;
+      }
+      if (event.key === '\\' && !blocksStudioShortcuts(event.target, event.isComposing) && document) {
+        event.preventDefault();
+        viewport.toggleDual();
+        return;
+      }
+      if (event.key === 'PageDown' && !blocksStudioShortcuts(event.target, event.isComposing) && canNavigate) {
+        const next = goToAdjacentPage(1);
+        if (next) { event.preventDefault(); next(); }
+        return;
+      }
+      if (event.key === 'PageUp' && !blocksStudioShortcuts(event.target, event.isComposing) && canNavigate) {
+        const prev = goToAdjacentPage(-1);
+        if (prev) { event.preventDefault(); prev(); }
+        return;
+      }
+      if (event.key === 'Escape') {
+        const activeEl = window.document.activeElement;
+        if (activeEl instanceof HTMLTextAreaElement || activeEl instanceof HTMLInputElement) {
+          activeEl.blur();
+          return;
+        }
+      }
       if(event.key==='Delete' && !blocksStudioShortcuts(event.target,event.isComposing) && !settings && !exportOpen && !textEditor && !busy && !running){ event.preventDefault(); if(selectedDialogueId)deleteDialogue(selectedDialogueId);else if(detectionMode === 'bubble')excludeCandidate();return; }
       const shortcut = resolveStudioShortcut(event);
       if (!shortcut) return;
@@ -330,7 +365,7 @@ export default function App() {
   const scan = (scope = detectAll ? 'all' : 'current') => { if (canScan && api) void action(async () => { await flushEdits(); setPreview(null);setMaskUrl(null);
     if (detectionMode === 'bubble') frames.clearCache();
     const ids = processingPageIds(scope,state.chapter,queuedPages);
-    const job = detectionMode === 'text' ? await api.post<Job>('/v1/detect-text', {ids})
+    const job = detectionMode === 'text' ? await api.post<Job>('/v1/detect-text', {ids, include_free_text: includeFreeText})
       : await api.post<Job>('/v1/process', {provider,ids,skip_ocr:true,output_mode:composition.text_mode ?? 'clean'});
     setState(previous => ({...previous,job}));
   }); };
@@ -502,6 +537,106 @@ export default function App() {
     });
   };
   const deleteDialogue = (id: string) => { if (api) void action(async () => { await flushEdits(); setState(await api.post<State>(`/v1/dialogues/${encodeURIComponent(id)}/delete`)); setSelectedDialogueId(null); }); };
+
+  const currentPageId = document?.pageId ?? '';
+  const approvedBubbles = useMemo(() => approvedMap[currentPageId] ?? new Set<string>(), [approvedMap, currentPageId]);
+  const bubbleStatuses = useMemo(() => {
+    const map: Record<string, 'raw' | 'draft' | 'done' | 'error' | 'excluded'> = {};
+    if (!document) return map;
+    for (const b of document.bubbles) {
+      if (b.excluded) { map[b.id] = 'excluded'; continue; }
+      const d = document.dialogues?.find(item => item.bubble_id === b.id);
+      const render = d ? typography.getSnapshot().layers[d.id] : undefined;
+      if (render?.overflow) { map[b.id] = 'error'; continue; }
+      if (approvedBubbles.has(b.id)) { map[b.id] = 'done'; continue; }
+      if (d?.text?.trim() || b.cleaning === 'Cleaned') { map[b.id] = 'draft'; continue; }
+      map[b.id] = 'raw';
+    }
+    return map;
+  }, [document, approvedBubbles, typography]);
+
+  const bubbleSummary = useMemo(() => {
+    if (!document || !document.bubbles.length) return '';
+    let done = 0, draft = 0, raw = 0;
+    for (const b of document.bubbles) {
+      if (b.excluded) continue;
+      const status = bubbleStatuses[b.id];
+      if (status === 'done') done++;
+      else if (status === 'draft') draft++;
+      else if (status === 'raw') raw++;
+    }
+    return `${done} ✓ ${draft} ✎ ${raw} ●`;
+  }, [document, bubbleStatuses]);
+
+  const activeBubbleIndex = active && document ? document.bubbles.indexOf(active) : -1;
+  const activeBubbleLabel = activeBubbleIndex >= 0 ? `ID: ${String(activeBubbleIndex + 1).padStart(2, '0')}` : 'ID: —';
+
+  const cycleBubble = (offset: 1 | -1) => {
+    if (!document || !document.bubbles.length) return;
+    const validBubbles = document.bubbles.filter(b => !b.excluded);
+    if (!validBubbles.length) return;
+    const currentIndex = active ? validBubbles.findIndex(b => b.id === active.id) : -1;
+    const nextIndex = currentIndex < 0
+      ? (offset > 0 ? 0 : validBubbles.length - 1)
+      : (currentIndex + offset + validBubbles.length) % validBubbles.length;
+    const target = validBubbles[nextIndex];
+    if (target) {
+      selectFromScript(target.id, false);
+      const [bx, by, bw, bh] = target.rect;
+      viewport.update({
+        pan: {
+          x: bx + bw / 2 - document.width / 2,
+          y: by + bh / 2 - document.height / 2,
+        }
+      });
+      requestAnimationFrame(() => {
+        const input = window.document.getElementById('typography-text') as HTMLTextAreaElement | null;
+        if (input) {
+          input.focus();
+          input.setSelectionRange(input.value.length, input.value.length);
+        }
+      });
+    }
+  };
+
+  const approveAndAdvance = () => {
+    if (!active || !document) return;
+    const bubbleId = active.id;
+    setApprovedMap(prev => {
+      const set = new Set(prev[currentPageId] ?? []);
+      set.add(bubbleId);
+      return { ...prev, [currentPageId]: set };
+    });
+    if (newDialogue.trim() && !activeDialogue) {
+      createDialogue(undefined, newDialogue);
+    } else if (activeDialogue) {
+      void typography.flush().catch(() => {});
+    }
+    cycleBubble(1);
+  };
+
+  const unapproveActiveBubble = () => {
+    if (active && approvedBubbles.has(active.id)) {
+      setApprovedMap(prev => {
+        const set = new Set(prev[currentPageId] ?? []);
+        set.delete(active.id);
+        return { ...prev, [currentPageId]: set };
+      });
+    }
+  };
+
+  const currentBubbleNumber = active && document ? document.bubbles.indexOf(active) + 1 : null;
+  const currentBubbleStatus = active ? bubbleStatuses[active.id] ?? 'raw' : null;
+  const bubbleHeaderNode = active && currentBubbleNumber !== null ? (
+    <div className="bubble-header-bar">
+      <span className="bubble-header-badge">#{String(currentBubbleNumber).padStart(2, '0')}</span>
+      <span className={`bubble-header-status ${currentBubbleStatus}`}>{currentBubbleStatus}</span>
+      <div className="bubble-header-nav">
+        <button type="button" aria-label="Previous bubble (Shift+Tab)" title="Previous bubble (Shift+Tab)" onClick={() => cycleBubble(-1)}>‹</button>
+        <button type="button" aria-label="Next bubble (Tab)" title="Next bubble (Tab)" onClick={() => cycleBubble(1)}>›</button>
+      </div>
+    </div>
+  ) : null;
   const commitBubbleRect = async (id: string, rect: RegionRect) => {
     if (!api || busy || running) throw new Error('Wait until the editor is ready.');
     setBusy(true); setPreview(null); setMaskUrl(null);
@@ -574,7 +709,7 @@ export default function App() {
       <div className="canvas-column">
         {saveNotice && <div className="save-notice" role="status">{saveNotice}</div>}
         {error && <div className="error-banner" role="alert"><CircleHelp size={17} /><div><span>{error}</span>{exportIssues && <><p>Halaman {exportIssues.pageNumber}: {exportIssues.pageName}. Proyek tetap dapat disimpan.</p><ul style={{ maxHeight: 160, overflowY: 'auto' }}>{exportIssues.issues.map(issue => <li key={issue.dialogueId}><strong>{issue.dialogueLabel}</strong> · {issue.candidateNumber ? `Candidate ${String(issue.candidateNumber).padStart(2, '0')}` : 'Tanpa kandidat terhubung'}<br />{issue.reason}<br />Requested: {issue.requestedFamily} / {issue.requestedWeight} / {issue.requestedSize}px · Actual: {issue.resolvedFamily ?? 'tidak tersedia'} / {issue.resolvedWeight ?? '—'} / {issue.resolvedSize ?? '—'}px<br /><small>Dialogue ID: {issue.dialogueId} · Bubble ID: {issue.bubbleId ?? '—'}</small><br /><button disabled={busy || running || document?.pageId !== exportIssues.pageId || !document?.dialogues.some(text => text.id === issue.dialogueId)} onClick={() => { const text = document?.dialogues.find(text => text.id === issue.dialogueId); if (!text || document?.pageId !== exportIssues.pageId) return; selectDialogue(text.id); setShowTypography(true); setShowSelection(true); viewport.update({ pan: { x: text.x + text.width / 2 - document.width / 2, y: text.y + text.height / 2 - document.height / 2 } }); }}>Pilih dan perbaiki Dialogue</button></li>)}</ul></>}</div>{!api && !exportIssues && <button disabled={busy} onClick={reconnect}>Reconnect</button>}<button aria-label="Dismiss error" onClick={() => { setError(''); setExportIssues(null); }}><X size={16} /></button></div>}
-        {document ? <CanvasWorkspace detectionMode={detectionMode} showRulers={showRulers} activeLayer={cachedPreview ? null : activeLayer} typography={{ session: typography, dialogues: cachedPreview ? [] : document.dialogues ?? [], selected: selectedDialogueId, visible: !cachedPreview && showTypography, coverText: composition.text_mode === 'overlay', onSelect: selectDialogue, onEdit: selectDialogue }} interaction={interaction} editable={Boolean(api) && !pendingPageId && !busy && !running && !textEditor} showRegions={showRegions} showSelection={!cachedPreview && showSelection} onEditText={editTextRegion} onDeselect={() => { setActiveLayer(null);setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); }} onCommitBubble={commitBubbleRect} onCommitRegion={commitRegionRect} onGesture={value => { setRegionGesture(value); if (value) { setSaveNotice(''); setPreview(null); setMaskUrl(null); } }} controller={viewport} original={cachedPreview?.original ?? original} working={cachedPreview?.working ?? working} containers={containers} mask={cachedPreview ? null : mask} width={cachedPreview ? pendingPage!.width : document.width} height={cachedPreview ? pendingPage!.height : document.height} name={cachedPreview ? pendingPage!.name : document.sourceName} bubbles={cachedPreview ? (cachedPreview.bubbles ?? []) : document.bubbles.filter(bubble=>!bubble.excluded)} textRegions={cachedPreview ? cachedPreview.textRegions ?? [] : document.textRegions} selected={cachedPreview ? emptySelection : selected} selectedTextId={cachedPreview ? null : activeTextId} tool={pendingPageId ? 'select' : tool} brushRadius={brushRadius} showBoxes={showBoxes} showMask={!cachedPreview && showMask} showOriginal={showOriginal} showWorking={showWorking} onBubble={selectFromScript} onRect={rect => { setManualRect(rect); if (tool === 'text') createDialogue(rect); }} onBrush={editMask} onText={selectTextRegion} /> : <div className="empty-workspace"><div className="empty-content"><div className="empty-icon"><Aperture size={31} /></div><h1>Open a page to get started</h1><p>Press Ctrl+O, or choose a chapter folder.</p><div className="empty-actions"><button className="text-command primary large" onClick={choose}><FolderOpen size={18} /> Open Image or Project</button><button className="text-command large" onClick={chooseFolder}>Open Chapter Folder</button></div><span className="empty-hint">PNG, JPEG, or .mangaclean · Processing stays on this computer</span></div></div>}
+        {document ? <CanvasWorkspace bubbleStatuses={bubbleStatuses} detectionMode={detectionMode} showRulers={showRulers} activeLayer={cachedPreview ? null : activeLayer} typography={{ session: typography, dialogues: cachedPreview ? [] : document.dialogues ?? [], selected: selectedDialogueId, visible: !cachedPreview && showTypography, coverText: composition.text_mode === 'overlay', onSelect: selectDialogue, onEdit: selectDialogue }} interaction={interaction} editable={Boolean(api) && !pendingPageId && !busy && !running && !textEditor} showRegions={showRegions} showSelection={!cachedPreview && showSelection} onEditText={editTextRegion} onDeselect={() => { setActiveLayer(null);setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); }} onCommitBubble={commitBubbleRect} onCommitRegion={commitRegionRect} onGesture={value => { setRegionGesture(value); if (value) { setSaveNotice(''); setPreview(null); setMaskUrl(null); } }} controller={viewport} original={cachedPreview?.original ?? original} working={cachedPreview?.working ?? working} containers={containers} mask={cachedPreview ? null : mask} width={cachedPreview ? pendingPage!.width : document.width} height={cachedPreview ? pendingPage!.height : document.height} name={cachedPreview ? pendingPage!.name : document.sourceName} bubbles={cachedPreview ? (cachedPreview.bubbles ?? []) : document.bubbles.filter(bubble=>!bubble.excluded)} textRegions={cachedPreview ? cachedPreview.textRegions ?? [] : document.textRegions} selected={cachedPreview ? emptySelection : selected} selectedTextId={cachedPreview ? null : activeTextId} tool={pendingPageId ? 'select' : tool} brushRadius={brushRadius} showBoxes={showBoxes} showMask={!cachedPreview && showMask} showOriginal={showOriginal} showWorking={showWorking} onBubble={selectFromScript} onRect={rect => { setManualRect(rect); if (tool === 'text') createDialogue(rect); }} onBrush={editMask} onText={selectTextRegion} /> : <div className="empty-workspace"><div className="empty-content"><div className="empty-icon"><Aperture size={31} /></div><h1>Open a page to get started</h1><p>Press Ctrl+O, or choose a chapter folder.</p><div className="empty-actions"><button className="text-command primary large" onClick={choose}><FolderOpen size={18} /> Open Image or Project</button><button className="text-command large" onClick={chooseFolder}>Open Chapter Folder</button></div><span className="empty-hint">PNG, JPEG, or .mangaclean · Processing stays on this computer</span></div></div>}
       </div>
       {document && !rightCollapsed && <div className="right-dock-container" inert={Boolean(pendingPageId)} style={{ width: rightWidth }}><InspectorDock cardTypography={bubble => <TypographyCardControls session={typography} dialogues={document?.dialogues ?? []} bubbleId={bubble.id} selected={selectedDialogueId} disabled={!api || !document || busy || running || regionGesture || Boolean(textEditor)} onTarget={id => { setSelectedDialogueId(id); typography.select(id); setActiveTextId(null); }} />} document={document} selected={selected} onSelect={selectFromScript} tab={dockTab} onTab={setDockTab} onCollapse={() => setRightCollapsed(true)} layerControls={<>
         <label className="layer-control"><input type="checkbox" checked={showOriginal} onChange={event => setShowOriginal(event.target.checked)} />Raw Artwork<span>Original preview</span></label>
@@ -610,9 +745,9 @@ export default function App() {
             {tool === 'manual' && manualRect && <button disabled={!api || busy || jobActive} onClick={addManualBubble}>Add manual bubble region</button>}
             {active?.manualRegion && <button disabled={!api || busy || jobActive || active.hasAppliedMask} title={active.hasAppliedMask ? 'Undo cleaning before deleting this region' : 'Keep linked text and artwork'} onClick={deleteManualBubble}>Delete manual bubble region</button>}
             {document && <>{linkedDialogues.length > 1 && <TypographyLayerList session={typography} dialogues={linkedDialogues} selected={activeDialogue?.id ?? null} onSelect={selectDialogue} />}
-              <TypographyControls api={api} session={typography} selected={activeDialogue} disabled={!api || busy || running || regionGesture} onCreate={() => createDialogue()} onDelete={deleteDialogue} sourceControls={<>
-              <label>Original (OCR / source)<textarea aria-label="Source transcription" value={activeText ? manualDraft : text} onFocus={()=>{sourceFocused.current=true;}} onBlur={()=>{sourceFocused.current=false;saveSource();}} onChange={event => activeText ? setManualDraft(event.target.value) : setText(event.target.value)} disabled={busy || running} /></label>
-              {!activeDialogue && <label>Translation<textarea aria-label="New Indonesian dialogue" value={newDialogue} onChange={event=>setNewDialogue(event.target.value)} onBlur={()=>{if(newDialogue.trim())createDialogue(undefined,newDialogue);}} disabled={busy || running}/></label>}
+              <TypographyControls api={api} session={typography} selected={activeDialogue} disabled={!api || busy || running || regionGesture} onCreate={() => createDialogue()} onDelete={deleteDialogue} bubbleHeader={bubbleHeaderNode} onApprove={approveAndAdvance} sourceControls={<>
+              <div className="source-field-container"><label htmlFor="source-ocr-text">Original (Source)</label><textarea id="source-ocr-text" aria-label="Source transcription" value={activeText ? manualDraft : text} onFocus={()=>{sourceFocused.current=true;}} onBlur={()=>{sourceFocused.current=false;saveSource();}} onChange={event => { unapproveActiveBubble(); if (activeText) setManualDraft(event.target.value); else setText(event.target.value); }} disabled={busy || running} placeholder="Original transcription..." /></div>
+              {!activeDialogue && <div className="translation-field-container"><div className="field-header-row"><label htmlFor="typography-text">Translation</label><span className="char-counter">{newDialogue.length} chars</span></div><textarea id="typography-text" aria-label="New Indonesian dialogue" value={newDialogue} onChange={event=>{ unapproveActiveBubble(); setNewDialogue(event.target.value); }} onBlur={()=>{if(newDialogue.trim())createDialogue(undefined,newDialogue);}} disabled={busy || running} placeholder="Enter Indonesian dialogue..."/></div>}
               </>} sourceOptions={<>
               <details><summary>Source options</summary>
                 {detectionMode === 'text' && activeText && <button disabled={!api || busy || jobActive} onClick={() => translate('text')}>Translate this text</button>}
@@ -630,9 +765,9 @@ export default function App() {
       </InspectorDock><DockResizeHandle side="right" width={rightWidth} minimum={280} maximum={320} onResize={setRightWidth} /></div>}
     </main>
     {operationMessage && <div className="operation-overlay"><div className="operation-card"><div className="operation-spinner" role="progressbar" /><p role="status">{operationMessage}</p><progress aria-label="Operation progress" max={1} value={activeJob && typeof activeJob.progress === 'number' && activeJob.progress > 0 ? Math.min(1, activeJob.progress) : undefined} />{activeJob && <button disabled={activeJob.cancelRequested} onClick={() => { if (api) void api.post(`/v1/jobs/${activeJob.id}/cancel`).catch(reportError); }}>{activeJob.cancelRequested ? 'Cancelling…' : 'Cancel'}</button>}</div></div>}
-    <EngineStatusBar zoom={document && <ViewportZoomControls controller={viewport} />} connected={Boolean(api)} document={displayDocument} job={state.job} selected={selected.size} tool={tool} controller={viewport} onCancel={() => api && state.job && void action(async () => { await api.post(`/v1/jobs/${state.job!.id}/cancel`); })} />
+    <EngineStatusBar activeBubbleLabel={activeBubbleLabel} bubbleSummary={bubbleSummary} zoom={document && <ViewportZoomControls controller={viewport} />} connected={Boolean(api)} document={displayDocument} job={state.job} selected={selected.size} tool={tool} controller={viewport} onCancel={() => api && state.job && void action(async () => { await api.post(`/v1/jobs/${state.job!.id}/cancel`); })} />
     {textEditor && <SourceTextDialog session={textEditor} busy={busy} error={textEditorError} onClose={() => { if (!busy) setTextEditor(null); }} onSave={value => void saveEditorText(value)} />}
-    {settings && <PreferencesDialog api={api} needsGeminiKey={settings === 'gemini-key'} onClose={() => setSettings(false)} density={density} onDensity={setDensity} exportFormat={exportFormat} onExportFormat={setExportFormat} provider={provider} onProvider={setProvider} detectionMode={detectionMode} onDetectionMode={mode => { setDetectionMode(mode); setShowBoxes(true); resetSelection(); if (tool.startsWith('mask-')) setTool('select'); }} textMode={composition.text_mode ?? 'clean'} onTextMode={document && api ? mode => changeComposition({text_mode:mode}) : undefined} busy={busy || jobActive || regionGesture || Boolean(textEditor)} onReset={() => { setDensity('Balanced'); setLeftCollapsed(window.innerWidth < 1120); setRightCollapsed(false); setLeftWidth(220); setRightWidth(300); viewport.reset(); }} />}
+    {settings && <PreferencesDialog api={api} needsGeminiKey={settings === 'gemini-key'} onClose={() => setSettings(false)} density={density} onDensity={setDensity} exportFormat={exportFormat} onExportFormat={setExportFormat} provider={provider} onProvider={setProvider} detectionMode={detectionMode} onDetectionMode={mode => { setDetectionMode(mode); setShowBoxes(true); resetSelection(); if (tool.startsWith('mask-')) setTool('select'); }} textMode={composition.text_mode ?? 'clean'} onTextMode={document && api ? mode => changeComposition({text_mode:mode}) : undefined} includeFreeText={includeFreeText} onIncludeFreeText={setIncludeFreeText} busy={busy || jobActive || regionGesture || Boolean(textEditor)} onReset={() => { setDensity('Balanced'); setLeftCollapsed(window.innerWidth < 1120); setRightCollapsed(false); setLeftWidth(220); setRightWidth(300); viewport.reset(); }} />}
     {exportOpen && document && <QuickExportDialog chapterCount={state.chapter?.pages.length} onExportPages={exportPages} typographyNotice={<TypographyExportNotice session={typography} count={document.dialogues?.filter(text => text.visible).length ?? 0} />} onClose={() => setExportOpen(false)} width={document.width} height={document.height} busy={busy || running} onExport={kind => { setExportFormat(kind); setExportOpen(false); download(kind); }} />}
   </div></TooltipProvider>;
 }
