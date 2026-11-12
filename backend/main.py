@@ -780,18 +780,9 @@ def apply_clean(payload: CleanRequest, check_cancel=None):
     text_only = bool(preview.get('textRegionId'))
     mask = preview["mask"].copy(); before = doc.working.copy()
     try:
-        region = doc.region_graph.region(preview.get('textRegionId')) if (text_only and not bubbles) else None
-        texture_block = synthesize_texture_block(before, tuple(region.rect)) if (region and not region.bubble_id) else None
-        if texture_block is not None:
-            rx, ry, rw, rh = tuple(region.rect)
-            res_img = before.copy()
-            res_img[ry:ry+rh, rx:rx+rw] = texture_block
-            result = CleanResult(res_img, rw * rh, rw * rh, 'Synthesized Texture', 'Synthesized background hatch texture', 0, 0, 0)
-            checks = {}
-        else:
-            result, checks = execute(before, mask, payload.method, payload.radius,
-                                     preview['safe'] if bubbles or healing or text_only else None,
-                                     preview['proposals'], restore_text)
+        result, checks = execute(before, mask, payload.method, payload.radius,
+                                 preview['safe'] if bubbles or healing or text_only else None,
+                                 preview['proposals'], restore_text)
     except ValueError as error: raise HTTPException(422, str(error)) from error
     if result.changed_pixels == 0: raise HTTPException(422, "Tidak ada piksel berubah.")
     if check_cancel is not None: check_cancel()

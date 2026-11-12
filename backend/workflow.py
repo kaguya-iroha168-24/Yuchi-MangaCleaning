@@ -26,7 +26,7 @@ class ScanRequest(BaseModel):
     detect_only: bool=False
     skip_ocr: bool=False
     output_mode: Literal['clean', 'overlay']='clean'
-    include_free_text: bool=False
+    include_free_text: bool=True
 
 
 def bubble_text_rect(bubble):
@@ -80,7 +80,7 @@ def register(namespace):
                             check(job, page_id)
                             if store.job and store.job['id'] == job:
                                 store.job.update(message=f'{action_label}…', progress=base_progress + page_slice * 0.15)
-                        candidates = list(locate_text(source, bubbles, include_free_text=getattr(payload, 'include_free_text', False)))
+                        candidates = list(locate_text(source, bubbles, include_free_text=getattr(payload, 'include_free_text', True)))
                         with store.lock:
                             check(job, page_id)
                             if store.job and store.job['id'] == job:
@@ -134,25 +134,13 @@ def register(namespace):
                                         if (rx + rw > bx and rx < bx + bw and ry + rh > by and ry < by + bh):
                                             linked_bubble = b
 
-                                if linked_bubble is None:
-                                    texture_block = synthesize_texture_block(working_img, rect)
-                                    if texture_block is not None:
-                                        rx, ry, rw, rh = rect
-                                        working_img[ry:ry+rh, rx:rx+rw] = texture_block
-                                        working_changed = True
-                                        continue
-
                                 try:
                                     mask, interior = prepare_text_selection(working_img, rect, bubble=linked_bubble)
                                     if cv2.countNonZero(mask) > 0:
-                                        if linked_bubble is not None:
-                                            working_img[mask > 0] = 255
+                                        res = restore_text(working_img, mask, method=AUTO, radius=2.0, interior=interior)
+                                        if res.changed_pixels > 0:
+                                            working_img = res.image
                                             working_changed = True
-                                        else:
-                                            res = restore_text(working_img, mask, method=NS, radius=3.0, interior=interior)
-                                            if res.changed_pixels > 0:
-                                                working_img = res.image
-                                                working_changed = True
                                 except Exception:
                                     pass
 

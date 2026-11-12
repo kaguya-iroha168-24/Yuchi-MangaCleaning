@@ -19,11 +19,49 @@ export interface MangaProject {
   lastEdited: string;
   lastEditedTimestamp: number;
   folderPath: string;
+  imagePaths?: string[];
+  lastActivePage?: string;
   preset: string;
   isMissing?: boolean;
 }
 
 const STORAGE_KEY = 'mangaclean_atelier_recent_projects_v2';
+
+export function normalizePath(path?: string): string {
+  if (!path) return '';
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+export function deduplicateProjects(list: MangaProject[]): MangaProject[] {
+  const seenPaths = new Set<string>();
+  const seenSeries = new Set<string>();
+  const seenIds = new Set<string>();
+  const deduplicated: MangaProject[] = [];
+
+  // Sort by latest timestamp first so the most recent edit wins
+  const sorted = [...list].sort((a, b) => (b.lastEditedTimestamp || 0) - (a.lastEditedTimestamp || 0));
+
+  for (const p of sorted) {
+    if (seenIds.has(p.id)) continue;
+
+    const normPath = normalizePath(p.folderPath);
+    const seriesKey = `${(p.seriesTitle || '').trim().toLowerCase()}__ch_${p.chapterNumber || 1}`;
+
+    if (normPath && seenPaths.has(normPath)) {
+      continue;
+    }
+    if (seriesKey && seenSeries.has(seriesKey)) {
+      continue;
+    }
+
+    seenIds.add(p.id);
+    if (normPath) seenPaths.add(normPath);
+    if (seriesKey) seenSeries.add(seriesKey);
+    deduplicated.push(p);
+  }
+
+  return deduplicated;
+}
 
 export function formatRelativeTime(timestamp: number): string {
   if (!timestamp) return 'Recently';
@@ -96,11 +134,18 @@ export function loadRecentProjects(): MangaProject[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.map((item: any) => ({
+    const formatted = parsed.map((item: any) => ({
       ...item,
+      pagesCount: Number(item.pagesCount) || 0,
+      progressPercent: Number(item.progressPercent) || 0,
       lastEdited: formatRelativeTime(item.lastEditedTimestamp || Date.now()),
       isMissing: Boolean(item.isMissing)
     }));
+    const deduped = deduplicateProjects(formatted);
+    if (deduped.length !== parsed.length) {
+      saveRecentProjects(deduped);
+    }
+    return deduped;
   } catch {
     return [];
   }
@@ -115,33 +160,50 @@ export function saveRecentProjects(projects: MangaProject[]): void {
 }
 
 export function addOrUpdateRecentProject(
-  projectData: Partial<MangaProject> & { seriesTitle: string; folderPath: string }
+  projectData: Partial<MangaProject> & { seriesTitle: string }
 ): MangaProject[] {
   const current = loadRecentProjects();
   const id = projectData.id || `proj_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const now = Date.now();
+  const normFolder = normalizePath(projectData.folderPath);
 
-  const existingIndex = current.findIndex(
-    p => p.id === id || (p.folderPath && p.folderPath.toLowerCase() === projectData.folderPath.toLowerCase())
-  );
+  const existingIndex = current.findIndex(p => {
+    if (projectData.id && p.id === projectData.id) return true;
+    if (normFolder && p.folderPath && normalizePath(p.folderPath) === normFolder) return true;
+    if (
+      p.seriesTitle &&
+      projectData.seriesTitle &&
+      p.seriesTitle.trim().toLowerCase() === projectData.seriesTitle.trim().toLowerCase() &&
+      p.chapterNumber === projectData.chapterNumber
+    ) {
+      return true;
+    }
+    return false;
+  });
+
+  const existing = existingIndex >= 0 ? current[existingIndex] : null;
 
   const updatedItem: MangaProject = {
-    id: existingIndex >= 0 ? current[existingIndex].id : id,
-    seriesTitle: projectData.seriesTitle,
-    chapterTitle: projectData.chapterTitle || 'Chapter 1',
-    chapterNumber: projectData.chapterNumber || 1,
-    coverImage: projectData.coverImage || (existingIndex >= 0 ? current[existingIndex].coverImage : undefined),
-    pagesCount: projectData.pagesCount ?? (existingIndex >= 0 ? current[existingIndex].pagesCount : 1),
-    completedPages: projectData.completedPages ?? (existingIndex >= 0 ? current[existingIndex].completedPages : 0),
-    progressPercent: projectData.progressPercent ?? (existingIndex >= 0 ? current[existingIndex].progressPercent : 0),
-    status: projectData.status || (existingIndex >= 0 ? current[existingIndex].status : 'detected'),
-    statusLabel: projectData.statusLabel || (existingIndex >= 0 ? current[existingIndex].statusLabel : 'Detected / Pending Review'),
-    sourceLang: projectData.sourceLang || 'JA',
-    targetLang: projectData.targetLang || 'ID',
+    id: existing ? existing.id : id,
+    seriesTitle: projectData.seriesTitle || (existing ? existing.seriesTitle : 'Untitled Series'),
+    chapterTitle: projectData.chapterTitle || (existing ? existing.chapterTitle : `Chapter ${projectData.chapterNumber || 1}`),
+    chapterNumber: projectData.chapterNumber ?? (existing ? existing.chapterNumber : 1),
+    coverImage: projectData.coverImage || (existing ? existing.coverImage : undefined),
+    pagesCount: (projectData.pagesCount !== undefined && projectData.pagesCount > 0)
+      ? projectData.pagesCount
+      : (existing && existing.pagesCount > 0 ? existing.pagesCount : (projectData.pagesCount ?? 0)),
+    completedPages: projectData.completedPages ?? (existing ? existing.completedPages : 0),
+    progressPercent: projectData.progressPercent ?? (existing ? existing.progressPercent : 0),
+    status: projectData.status || (existing ? existing.status : 'detected'),
+    statusLabel: projectData.statusLabel || (existing ? existing.statusLabel : 'Detected / Pending Review'),
+    sourceLang: projectData.sourceLang || (existing ? existing.sourceLang : 'JA'),
+    targetLang: projectData.targetLang || (existing ? existing.targetLang : 'ID'),
     lastEdited: 'Just now',
     lastEditedTimestamp: now,
-    folderPath: projectData.folderPath,
-    preset: projectData.preset || 'Seinen High-Detail',
+    folderPath: projectData.folderPath || (existing ? existing.folderPath : ''),
+    imagePaths: projectData.imagePaths || (existing ? existing.imagePaths : undefined),
+    lastActivePage: projectData.lastActivePage || (existing ? existing.lastActivePage : undefined),
+    preset: projectData.preset || (existing ? existing.preset : 'Seinen High-Detail'),
     isMissing: false
   };
 
@@ -152,7 +214,7 @@ export function addOrUpdateRecentProject(
     nextList = [updatedItem, ...current];
   }
 
-  // Limit to 50 most recent items
+  nextList = deduplicateProjects(nextList);
   if (nextList.length > 50) {
     nextList = nextList.slice(0, 50);
   }
@@ -175,7 +237,7 @@ export function updateProjectCover(id: string, coverImage: string): MangaProject
 
 export function updateProjectInfo(
   id: string,
-  info: Partial<Pick<MangaProject, 'seriesTitle' | 'chapterNumber' | 'chapterTitle' | 'sourceLang' | 'targetLang' | 'preset'>>
+  info: Partial<MangaProject>
 ): MangaProject[] {
   const current = loadRecentProjects();
   const updated = current.map(p => {

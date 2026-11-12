@@ -9,7 +9,7 @@ import { MangaCleanLogo } from './components/MangaCleanIcons';
 import { Api, ApiError, type DetectionMode, type ExportPreflight, type Job, type LayerPatch, type PageComposition, type Preview, type State, type TextRegion, connect } from './api';
 import { ChapterNavigator } from './components/ChapterNavigator';
 import { AtelierHomeScreen } from './components/AtelierHomeScreen';
-import { addOrUpdateRecentProject, createThumbnailDataUrl } from './utils/recentProjectsStorage';
+import { addOrUpdateRecentProject, updateProjectInfo, createThumbnailDataUrl } from './utils/recentProjectsStorage';
 import { ContextToolbar, DockResizeHandle, EngineStatusBar, FeatureBadge, InspectorDock, PageNavigator, StudioHeader, ToolRail, type DockTab } from './components/StudioShell';
 import { PreferencesDialog, QuickExportDialog, type TranslationSettings } from './components/PreferencesDialog';
 import { blocksStudioShortcuts, resolveStudioShortcut } from './ui/shortcuts';
@@ -84,6 +84,8 @@ export default function App() {
   const [pageFrame, setPageFrame] = useState<PageFrame | null>(null);
   const [pendingPageId, setPendingPageId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<'home' | 'workspace'>('home');
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const bindingProjectIdRef = useRef<string | null>(null);
   const originalUrl = pageFrame?.originalUrl ?? null;
 
   const [brushRadius, setBrushRadius] = useState(5);
@@ -351,6 +353,25 @@ export default function App() {
   async function action(work: () => Promise<void>, label: string | null = null) { setError(''); setExportIssues(null); setSaveNotice(''); setBusy(true); setOperation(label); try { await work(); } catch (reason) { reportError(reason); } finally { setBusy(false); setOperation(null); setOperationProgress(undefined); } }
   const reconnect = () => void action(async () => { const client = await connect(); frames.clearCache(); await refresh(client, true); setApi(client); });
   async function flushEdits() { await sourceCommit.current; await typography.flush(); }
+  const syncActiveProjectProgress = () => {
+    if (!activeProjectId || !displayDocument) return;
+    const dialogues = displayDocument.dialogues || [];
+    const total = dialogues.length;
+    const translatedCount = dialogues.filter(d => Boolean(d.text?.trim())).length;
+    const approvedPageSet = approvedMap[displayDocument.pageId];
+    const approvedCount = approvedPageSet ? approvedPageSet.size : 0;
+    const completedCount = Math.max(translatedCount, approvedCount);
+    const percent = total > 0 ? Math.min(100, Math.round((completedCount / total) * 100)) : 0;
+    const status = percent === 100 ? 'approved' : percent > 0 ? 'in_progress' : 'detected';
+    const statusLabel = percent === 100 ? '100% Approved & Cleaned' : percent > 0 ? `${percent}% In Progress` : 'Detected / Ready';
+    updateProjectInfo(activeProjectId, {
+      progressPercent: percent,
+      status,
+      statusLabel,
+      lastActivePage: displayDocument.sourceName
+    });
+  };
+
   const resetSelection = () => { setActiveLayer(null); setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); setManualRect(null); setNewDialogue(''); };
   const choose = () => { appendImport.current = false; fileInput.current?.click(); };
   const chooseFolder = () => { appendImport.current = false; folderInput.current?.click(); };
@@ -372,22 +393,11 @@ export default function App() {
         setOperation('Opening project…');
         setOperationProgress(undefined);
         next = await client.upload(files[0], discard);
-      } else if (files.length === 1) {
-        setOperation('Importing image (1/1)…');
-        setOperationProgress(1);
-        next = await client.uploadPages(files, append, discard);
       } else {
         const sortedFiles = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-        const total = sortedFiles.length;
-        let lastState: State | null = null;
-        for (let i = 0; i < total; i++) {
-          const pageNum = i + 1;
-          setOperation(`Importing images (${pageNum}/${total})…`);
-          setOperationProgress(pageNum / total);
-          const isFirst = i === 0;
-          lastState = await client.uploadPages([sortedFiles[i]], append || !isFirst, discard && isFirst);
-        }
-        next = lastState!;
+        setOperation(`Importing ${sortedFiles.length} images…`);
+        setOperationProgress(undefined);
+        next = await client.uploadPages(sortedFiles, append, discard);
       }
       frames.clearCache();
       // Auto-detect project metadata & thumbnail for real persistent card history
@@ -407,19 +417,39 @@ export default function App() {
         if (!coverImage) {
           coverImage = await createThumbnailDataUrl(firstFile);
         }
-        addOrUpdateRecentProject({
-          seriesTitle,
-          chapterTitle: `Chapter ${chapterNumber}`,
-          chapterNumber,
-          folderPath: rawFolderPath,
-          coverImage,
-          pagesCount: files.length,
-          status: 'detected',
-          statusLabel: 'Detected / Pending Review',
-          sourceLang: 'JA',
-          targetLang: 'ID',
-          preset: 'Seinen High-Detail'
-        });
+        if (bindingProjectIdRef.current) {
+          const boundId = bindingProjectIdRef.current;
+          bindingProjectIdRef.current = null;
+          addOrUpdateRecentProject({
+            id: boundId,
+            seriesTitle,
+            chapterTitle: `Chapter ${chapterNumber}`,
+            chapterNumber,
+            folderPath: rawFolderPath,
+            coverImage,
+            pagesCount: sortedFiles.length,
+            status: 'detected',
+            statusLabel: 'Detected / Ready',
+            imagePaths: sortedFiles.map(f => (f as any)?.path || f.name)
+          });
+          setActiveProjectId(boundId);
+        } else {
+          const list = addOrUpdateRecentProject({
+            seriesTitle,
+            chapterTitle: `Chapter ${chapterNumber}`,
+            chapterNumber,
+            folderPath: rawFolderPath,
+            coverImage,
+            pagesCount: sortedFiles.length,
+            status: 'detected',
+            statusLabel: 'Detected / Pending Review',
+            sourceLang: 'JA',
+            targetLang: 'ID',
+            preset: 'Seinen High-Detail',
+            imagePaths: sortedFiles.map(f => (f as any)?.path || f.name)
+          });
+          if (list.length > 0) setActiveProjectId(list[0].id);
+        }
       } catch {
         // Fallback silently if metadata extraction fails
       }
@@ -431,7 +461,7 @@ export default function App() {
         viewport.reset();
         setActiveView('workspace');
       });
-    }, openingProject ? 'Opening project…' : `Importing images (1/${files.length})…`);
+    }, openingProject ? 'Opening project…' : `Importing ${files.length} images…`);
   };
   const switchPage = (id: string) => {
     if (!api || jobActive || (busy && !navigation.running)) return;
@@ -812,10 +842,11 @@ export default function App() {
         state={state}
         connected={Boolean(api)}
         api={api}
+        activeProjectId={activeProjectId}
         onOpenProject={choose}
         onOpenFolder={chooseFolder}
         onNewProject={(details) => {
-          addOrUpdateRecentProject({
+          const list = addOrUpdateRecentProject({
             seriesTitle: details.series,
             chapterTitle: `Chapter ${details.chapter}`,
             chapterNumber: parseInt(details.chapter, 10) || 1,
@@ -823,22 +854,52 @@ export default function App() {
             targetLang: details.targetLang,
             preset: details.preset,
             coverImage: details.coverImage,
-            folderPath: '',
-            pagesCount: 0,
+            folderPath: details.folderPath || '',
+            pagesCount: details.files?.length || 0,
             status: 'detected',
-            statusLabel: 'Initialized / Awaiting Folder'
+            statusLabel: 'Initialized / Ready',
+            imagePaths: details.files?.map(f => (f as any)?.path || f.name)
           });
-          setSaveNotice(`Project "${details.series} - Ch. ${details.chapter}" initialized (${details.preset}). Select chapter images.`);
-          chooseFolder();
-        }}
-        onResumeSession={() => setActiveView('workspace')}
-        onSelectProjectCard={(project) => {
-          if (document && (document.sourceName.includes(project.seriesTitle) || document.projectName?.includes(project.seriesTitle))) {
-            setActiveView('workspace');
+          const projId = list[0]?.id;
+          if (projId) setActiveProjectId(projId);
+          if (details.files && details.files.length > 0) {
+            bindingProjectIdRef.current = projId || null;
+            onFiles(details.files);
           } else {
-            setSaveNotice(`Opening ${project.seriesTitle} - Ch. ${project.chapterNumber}. Select chapter folder to load.`);
+            bindingProjectIdRef.current = projId || null;
+            setSaveNotice(`Project "${details.series} - Ch. ${details.chapter}" initialized (${details.preset}). Select chapter images.`);
             chooseFolder();
           }
+        }}
+        onResumeSession={() => setActiveView('workspace')}
+        onSelectProjectCard={async (project) => {
+          if (activeProjectId === project.id && displayDocument) {
+            setActiveView('workspace');
+            return;
+          }
+          if (project.folderPath) {
+            void action(async () => {
+              await flushEdits();
+              await typography.abandon();
+              const client = api ?? await connect();
+              setApi(client);
+              setOperation(`Opening ${project.seriesTitle}…`);
+              const next = await client.openPath(project.folderPath!, true);
+              frames.clearCache();
+              setActiveProjectId(project.id);
+              await refresh(client, true, next, () => {
+                resetSelection();
+                setQueuedPages(new Set());
+                setTool('select');
+                viewport.reset();
+                setActiveView('workspace');
+              });
+            }, `Opening ${project.seriesTitle}…`);
+            return;
+          }
+          bindingProjectIdRef.current = project.id;
+          setSaveNotice(`Link raw manga folder to "${project.seriesTitle} - Ch. ${project.chapterNumber}".`);
+          chooseFolder();
         }}
         onOpenSettings={() => setSettings(true)}
         onDropFiles={onFiles}
@@ -846,7 +907,10 @@ export default function App() {
     ) : (
       <>
         <StudioHeader
-          onHome={() => setActiveView('home')}
+          onHome={() => {
+            syncActiveProjectProgress();
+            setActiveView('home');
+          }}
           isHome={false}
           processing={jobActive}
           document={displayDocument}

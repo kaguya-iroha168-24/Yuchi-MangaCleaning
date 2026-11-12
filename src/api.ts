@@ -221,6 +221,14 @@ export class Api {
     return () => { stopped = true; clearTimeout(timer); socket.close(); };
   }
 
+  async openPath(path: string, discard = false): Promise<State> {
+    return this.post<State>('/v1/open-path', { path, discard });
+  }
+
+  async saveProjectManifest(folderPath: string, manifest: Record<string, any>): Promise<{ ok: boolean; path?: string }> {
+    return this.post<{ ok: boolean; path?: string }>('/v1/chapter/save-manifest', { folderPath, manifest });
+  }
+
   async getTelemetry(): Promise<SystemTelemetry> {
     return this.get<SystemTelemetry>('/v1/system/telemetry');
   }

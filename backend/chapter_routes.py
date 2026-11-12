@@ -40,10 +40,107 @@ class ExportPages(BaseModel):
     ids: list[str]=Field(default_factory=list,max_length=200)
 
 
+class OpenPathPayload(BaseModel):
+    path: str
+    discard: bool = False
+
+
+class SaveManifestPayload(BaseModel):
+    folderPath: str
+    manifest: dict
+
+
 def register(namespace):
     m=SimpleNamespace(**namespace)
     app,store=m.app,m.store
     store.chapter=None
+
+    @app.post('/v1/open-path')
+    def open_disk_path(payload: OpenPathPayload, request: Request):
+        m.require_auth(request.headers.get('authorization'))
+        target = Path(payload.path)
+        if not target.exists():
+            raise HTTPException(404, f'File or folder not found: {payload.path}')
+        with store.lock:
+            m.check_idle()
+            if not payload.discard and store.document and (store.document.dirty or (chapter_state(store) or {}).get('dirty')):
+                raise HTTPException(409, 'Save current project or discard changes before opening another project.')
+            # 1. If it's a chapter package or single-page project .mangaclean file
+            if target.is_file() and target.suffix.lower() == '.mangaclean':
+                if chapter_manifest(target):
+                    open_chapter(m, target)
+                    return m.public_state()
+                else:
+                    data = m.load_project(target)
+                    source = data["source"]
+                    doc = m.Document(source=source, working=data["clean"] if data["clean"] is not None else source.copy(),
+                                   source_name=data["path"], mask=data["mask"], manual_mask=data["manual_mask"],
+                                   bubbles=data["bubbles"], dialogues=data["dialogues"], region_graph=data["region_graph"],
+                                   active_text_id=data["active_text_id"], detection_runs=data["detection_runs"], composition=data['composition'],
+                                   project_name=target.name)
+                    store.document = doc
+                    store.chapter = None
+                    store.undo.clear(); store.redo.clear(); store.preview = None
+                    m.clear_render_cache()
+                    return m.public_state()
+
+            # 2. If it's a single image file
+            if target.is_file() and target.suffix.lower() in {'.png', '.jpg', '.jpeg'}:
+                source = m.read_image(target)
+                name = target.name
+                doc = m.Document(source=source, working=source.copy(), source_name=name,
+                               mask=m.np.zeros(source.shape[:2], m.np.uint8), region_graph=m.RegionGraph.for_legacy(source, name))
+                store.document = doc
+                store.chapter = None
+                store.undo.clear(); store.redo.clear(); store.preview = None
+                m.clear_render_cache()
+                return m.public_state()
+
+            # 3. If it's a directory
+            if target.is_dir():
+                mc_files = [f for f in target.glob('*.mangaclean') if f.is_file()]
+                for mc in mc_files:
+                    if chapter_manifest(mc):
+                        open_chapter(m, mc)
+                        return m.public_state()
+
+                images = [f for f in target.iterdir() if f.is_file() and f.suffix.lower() in {'.png', '.jpg', '.jpeg'}]
+                if not images:
+                    raise HTTPException(422, 'No PNG or JPEG images found in that folder.')
+                images.sort(key=lambda f: natural_key(f.name))
+                if len(images) > 200:
+                    images = images[:200]
+
+                chapter = Chapter(m.CACHE, m.Document)
+                for img_path in images:
+                    source = m.read_image(img_path)
+                    graph = m.RegionGraph.for_legacy(source, img_path.name)
+                    doc = m.Document(source, source.copy(), img_path.name, m.np.zeros(source.shape[:2], m.np.uint8), region_graph=graph, dirty=False)
+                    chapter.add(doc, raw=True)
+                    if not hasattr(chapter, "_doc_cache"): chapter._doc_cache = {}
+                    chapter._doc_cache[graph.page_id] = doc
+
+                chapter.activate(store, chapter.pages[0]['id'], flush=False)
+                store.chapter = chapter
+                store.preview = None
+                m.clear_render_cache()
+                return m.public_state()
+
+            raise HTTPException(422, 'Unsupported file or folder format.')
+
+    @app.post('/v1/chapter/save-manifest')
+    def save_manifest(payload: SaveManifestPayload, request: Request):
+        m.require_auth(request.headers.get('authorization'))
+        folder = Path(payload.folderPath)
+        if not folder.exists() or not folder.is_dir():
+            folder = m.ROOT / 'outputs/projects'
+            folder.mkdir(parents=True, exist_ok=True)
+        manifest_file = folder / 'project.mangaclean.json'
+        try:
+            manifest_file.write_text(json.dumps(payload.manifest, indent=2), encoding='utf-8')
+            return dict(ok=True, path=str(manifest_file))
+        except Exception as e:
+            return dict(ok=False, error=str(e))
 
     @app.post('/v1/pages/import')
     async def import_pages(request: Request,files: list[UploadFile]):

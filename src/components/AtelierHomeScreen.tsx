@@ -45,6 +45,7 @@ export interface AtelierHomeScreenProps {
   state: State;
   connected: boolean;
   api: Api | null;
+  activeProjectId?: string | null;
   onOpenProject: () => void;
   onOpenFolder: () => void;
   onNewProject: (details: {
@@ -54,6 +55,8 @@ export interface AtelierHomeScreenProps {
     targetLang: string;
     preset: string;
     coverImage?: string;
+    folderPath?: string;
+    files?: File[];
   }) => void;
   onResumeSession: () => void;
   onSelectProjectCard: (project: MangaProject) => void;
@@ -102,6 +105,7 @@ export function AtelierHomeScreen({
   state,
   connected,
   api,
+  activeProjectId,
   onOpenProject,
   onOpenFolder,
   onNewProject,
@@ -128,6 +132,11 @@ export function AtelierHomeScreen({
   // Hidden file input for changing card cover image
   const coverFileInputRef = useRef<HTMLInputElement>(null);
   const [targetCoverProjectId, setTargetCoverProjectId] = useState<string | null>(null);
+
+  // Hidden folder/files input for New Chapter Project modal
+  const newFolderInputRef = useRef<HTMLInputElement>(null);
+  const [selectedChapterFiles, setSelectedChapterFiles] = useState<File[]>([]);
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string>('');
 
   // Real projects list (persisted in localStorage, zero mock data)
   const [projects, setProjects] = useState<MangaProject[]>(() => loadRecentProjects());
@@ -255,12 +264,50 @@ export function AtelierHomeScreen({
       sourceLang: newSourceLang,
       targetLang: newTargetLang,
       preset: newPreset,
-      coverImage: newCoverDataUrl
+      coverImage: newCoverDataUrl,
+      folderPath: selectedFolderPath || undefined,
+      files: selectedChapterFiles.length > 0 ? selectedChapterFiles : undefined
     });
     setIsNewProjectModalOpen(false);
     setNewSeries('');
     setNewChapter('');
     setNewCoverDataUrl(undefined);
+    setSelectedChapterFiles([]);
+    setSelectedFolderPath('');
+  };
+
+  // Folder / Multi-Image selection for New Project Modal
+  const handleNewChapterFolderSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawFiles = Array.from(e.target.files || []);
+    const imgFiles = rawFiles.filter(f => /\.(png|jpe?g|webp)$/i.test(f.name));
+    if (!imgFiles.length) return;
+    imgFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    setSelectedChapterFiles(imgFiles);
+
+    const first = imgFiles[0];
+    const relPath = (first as any)?.webkitRelativePath || '';
+    const folderName = relPath.includes('/') ? relPath.split('/')[0] : '';
+    const rawFolderPath = (first as any)?.path ? ((first as any).path.replace(/\\/g, '/').split('/').slice(0, -1).join('/') || (first as any).path) : '';
+    if (rawFolderPath) {
+      setSelectedFolderPath(rawFolderPath);
+    }
+
+    if (!newSeries.trim() && folderName) {
+      setNewSeries(folderName);
+    }
+    if (!newChapter.trim() && folderName) {
+      const match = folderName.match(/(?:ch(?:apter)?|c|#)\s*[-_.]?\s*(\d+)/i) || folderName.match(/(\d+)/);
+      if (match) setNewChapter(match[1]);
+    }
+    if (!newCoverDataUrl) {
+      if ((first as any)?.path) {
+        setNewCoverDataUrl((first as any).path);
+      } else {
+        const thumb = await createThumbnailDataUrl(first);
+        setNewCoverDataUrl(thumb);
+      }
+    }
+    e.target.value = '';
   };
 
   // Custom Cover Picker for New Project Modal
@@ -346,8 +393,11 @@ export function AtelierHomeScreen({
     setActiveContextMenu(null);
   };
 
-  const activeProjectName = currentProject?.projectName || currentProject?.sourceName || state.chapter?.id;
-  const hasActiveSession = Boolean(currentProject || state.chapter);
+  const activeProject = activeProjectId ? projects.find(p => p.id === activeProjectId) : null;
+  const activeProjectName = activeProject
+    ? `${activeProject.seriesTitle} (Ch. ${activeProject.chapterNumber}) · ${currentProject?.sourceName || 'Page 1'}`
+    : currentProject?.projectName || currentProject?.sourceName || state.chapter?.id;
+  const hasActiveSession = Boolean(currentProject || state.chapter || activeProject);
   const workspacePath = state.chapter?.savedPath || currentProject?.savedPath || 'E:\\BagassZx\\Yuchi Labs Tauri';
 
   return (
@@ -899,8 +949,10 @@ export function AtelierHomeScreen({
                             </div>
 
                             {/* Page Count Badge */}
-                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/85 backdrop-blur-md text-white/90 border border-white/10">
-                              {project.pagesCount}p
+                            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded backdrop-blur-md border ${
+                              project.pagesCount > 0 ? 'bg-black/85 text-white/90 border-white/10' : 'bg-amber-950/80 text-amber-300 border-amber-600/40'
+                            }`}>
+                              {project.pagesCount > 0 ? `${project.pagesCount}p` : '0p · Link folder'}
                             </span>
                           </div>
 
@@ -1097,7 +1149,13 @@ export function AtelierHomeScreen({
                               {project.sourceLang} → {project.targetLang}
                             </td>
                             <td className="py-2.5 px-3 text-[11px]">
-                              {project.pagesCount}p
+                              {project.pagesCount > 0 ? (
+                                <span className="font-mono">{project.pagesCount}p</span>
+                              ) : (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-950/60 text-amber-300 border border-amber-600/30">
+                                  0p · Link folder
+                                </span>
+                              )}
                             </td>
                             <td className="py-2.5 px-3 text-[11px] text-[#6B7280]">
                               {formatRelativeTime(project.lastEditedTimestamp)}
@@ -1515,6 +1573,41 @@ export function AtelierHomeScreen({
                 </div>
               </div>
 
+              {/* Hidden Input for Chapter Folder / Images */}
+              <input
+                ref={newFolderInputRef}
+                type="file"
+                multiple
+                // @ts-ignore
+                webkitdirectory=""
+                className="hidden"
+                onChange={handleNewChapterFolderSelected}
+              />
+
+              {/* Chapter Raw Images / Folder Selection */}
+              <div className="flex flex-col gap-1.5 pt-1">
+                <label className="text-[11px] font-medium text-[#F3F4F6]">Chapter Raw Images / Folder</label>
+                <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => newFolderInputRef.current?.click()}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1C1F26] hover:bg-[#252A34] text-[#F3F4F6] text-xs font-medium border border-[#232730] hover:border-[#EF4444]/60 transition-colors cursor-pointer"
+                  >
+                    <FolderOpen size={14} className="text-[#EF4444]" />
+                    <span>{selectedChapterFiles.length > 0 ? 'Change Folder / Files' : 'Select Folder / Images…'}</span>
+                  </button>
+                  <span className="text-[11px] text-[#9CA3AF] truncate flex-1">
+                    {selectedChapterFiles.length > 0 ? (
+                      <span className="text-[#10B981] font-mono">
+                        ✓ {selectedChapterFiles.length} pages ready {selectedFolderPath ? `(${selectedFolderPath.split('/').pop()})` : ''}
+                      </span>
+                    ) : (
+                      'Auto-fills series title, chapter number, & cover thumbnail'
+                    )}
+                  </span>
+                </div>
+              </div>
+
               {/* Cleaning & Typesetting Preset */}
               <div className="flex flex-col gap-1 pt-1">
                 <label className="text-[11px] font-medium text-[#F3F4F6]">Typesetting & Cleaning Preset</label>
@@ -1543,7 +1636,7 @@ export function AtelierHomeScreen({
                   type="submit"
                   className="px-4 py-2 rounded-lg bg-[#EF4444] hover:bg-[#DC2626] text-white text-xs font-medium shadow-md shadow-[#EF4444]/20 transition-all cursor-pointer"
                 >
-                  Create & Select Folder
+                  {selectedChapterFiles.length > 0 ? 'Create & Open Chapter' : 'Create & Select Folder'}
                 </button>
               </div>
             </form>

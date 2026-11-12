@@ -9,7 +9,8 @@ import numpy as np
 
 
 DETECTOR = 'ogkalu_v4_s_int8'
-CONFIDENCE = .25
+CONFIDENCE = .20
+SFX_CONFIDENCE = .14
 MODEL = Path(__file__).resolve().parents[2] / 'models/ogkalu/detector-v4-s_int8.onnx'
 MODEL_SHA256 = '5fe9e4f576e49d4e7e8b0e029d6d3cdc252abd4694113e1cae120e62c931ea79'
 
@@ -32,7 +33,7 @@ def _session():
     return ort.InferenceSession(model_bytes, options, providers=['CPUExecutionProvider'])
 
 
-def detect_text_bubbles(image, include_free_text=False):
+def detect_text_bubbles(image, include_free_text=True):
     """Return scored text boxes in native page coordinates."""
     session = _session()
     from PIL import Image
@@ -47,11 +48,13 @@ def detect_text_bubbles(image, include_free_text=False):
     allowed_labels = (1, 2) if include_free_text else (1,)
     candidates = []
     for label, box, score in zip(labels[0], boxes[0], scores[0]):
-        if label not in allowed_labels or not isfinite(score) or score < CONFIDENCE or not np.isfinite(box).all():
+        min_thresh = SFX_CONFIDENCE if label == 2 else CONFIDENCE
+        if label not in allowed_labels or not isfinite(score) or score < min_thresh or not np.isfinite(box).all():
             continue
         x1, y1, x2, y2 = box
         left, top = max(0, floor(x1)), max(0, floor(y1))
         right, bottom = min(width, ceil(x2)), min(height, ceil(y2))
         if left < right and top < bottom:
             candidates.append(((left, top, right-left, bottom-top), float(score)))
-    return sorted(candidates, key=lambda item: (item[0][1], item[0][0]))
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    return candidates

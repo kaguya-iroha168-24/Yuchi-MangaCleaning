@@ -133,7 +133,9 @@ def boundary_ink_mask(gray, safe, padding=2):
 def prepare_text_selection(image, rect, bubble=None, padding=2):
     x, y, w, h = selection_rect(image, rect)
     H, W = image.shape[:2]
-    pad = max(1, min(3, padding))
+
+    # Context margin around the text selection
+    pad = max(14, min(36, int(max(w, h) * 0.25)))
     x0 = max(0, x - pad)
     y0 = max(0, y - pad)
     x1 = min(W, x + w + pad)
@@ -141,16 +143,48 @@ def prepare_text_selection(image, rect, bubble=None, padding=2):
     rw, rh = x1 - x0, y1 - y0
 
     roi = image[y0:y1, x0:x1]
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    is_light = float(np.mean(gray >= 205)) >= 0.70
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+
+    otsu_val, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    thresh = min(205, max(40, int(otsu_val)))
+    ink = cv2.inRange(gray, 0, thresh)
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(ink)
+    if count <= 1:
+        raise ValueError('No text ink detected in this region.')
+
+    rx0, ry0 = x - x0, y - y0
+    rx1, ry1 = rx0 + w, ry0 + h
+
+    # Separate structural boundary lineart (bubble walls, panel borders, hair, stall frames)
+    # from isolated internal text glyphs
+    structural = np.zeros(count, dtype=bool)
+    for k in range(1, count):
+        cx, cy, cw, ch, area = stats[k]
+        touches_outer = (cx == 0 or cy == 0 or cx + cw >= rw or cy + ch >= rh)
+        is_long = (cw >= 0.65 * rw or ch >= 0.65 * rh)
+        is_large = area > 0.35 * rw * rh
+        # Connected ink extending outside the box
+        outside_left = max(0, rx0 - cx)
+        outside_right = max(0, (cx + cw) - rx1)
+        outside_top = max(0, ry0 - cy)
+        outside_bottom = max(0, (cy + ch) - ry1)
+        extends_outside = max(outside_left, outside_right, outside_top, outside_bottom) >= 4
+
+        if touches_outer or is_long or is_large or extends_outside:
+            structural[k] = True
+
+    struct_mask = structural[labels].astype(np.uint8) * 255
+    struct_buf = cv2.dilate(struct_mask, np.ones((5, 5), np.uint8))
 
     safe = np.full_like(gray, 255)
     safe[[0, -1], :] = 0
     safe[:, [0, -1]] = 0
+    safe &= cv2.bitwise_not(struct_buf)
+    safe &= cv2.bitwise_not(struct_mask)
+
     if bubble is not None:
         bx, by, bw, bh = bubble.rect
-        if x < bx or y < by or x+w > bx+bw or y+h > by+bh:
-            raise ValueError('Keep the linked text box inside its bubble before cleaning.')
         overlap_x0 = max(0, bx - x0)
         overlap_y0 = max(0, by - y0)
         overlap_x1 = min(rw, bx + bw - x0)
@@ -162,44 +196,27 @@ def prepare_text_selection(image, rect, bubble=None, padding=2):
             sub_safe[overlap_y0:overlap_y1, overlap_x0:overlap_x1] = sub_interior
             safe &= sub_safe
 
-    # Use complete ink components before clipping, so an outline that crosses
-    # the box or bubble interior is never treated as a detached glyph.
-    ink_limit = 205 if is_light else 190
-    ink = cv2.inRange(gray, 0, ink_limit)
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(ink)
-    if count <= 1:
-        raise ValueError('No text ink detected in this region.')
+    # Extract isolated glyph components within the text box
+    box_mask = np.zeros((rh, rw), dtype=np.uint8)
+    box_mask[ry0:ry1, rx0:rx1] = 255
 
-    protected = np.zeros(count, np.uint8)
-    protected[np.unique(labels[safe == 0])] = 255
-    protected[0] = 0
-    area_limit = .25*rw*rh
-    for k, (_, _, cw, ch, area) in enumerate(stats[1:], 1):
-        if (cw >= .80*rw or ch >= .80*rh or area > area_limit
-                or (cw >= .45*rw and cw >= 6*ch)
-                or (ch >= .45*rh and ch >= 6*cw)):
-            protected[k] = 255
-    safe &= cv2.bitwise_not(dilate_mask(protected[labels], 2))
+    glyphs = (~structural)[labels].astype(np.uint8) * 255
+    glyphs &= box_mask
+    glyphs &= cv2.bitwise_not(struct_buf)
 
-    rx0, ry0 = x - x0, y - y0
-    rx1, ry1 = rx0 + w, ry0 + h
-    text_ink = np.zeros_like(ink)
-    text_ink[ry0:ry1, rx0:rx1] = ink[ry0:ry1, rx0:rx1]
-    glyphs = text_ink & safe
+    if not np.any(glyphs):
+        raise ValueError('No removable text ink found in this selection.')
 
-    _, _, candidates, _ = cv2.connectedComponentsWithStats(glyphs)
-    areas = candidates[1:, 4]
-    if len(areas) > 40 and np.std(areas)/max(1, np.mean(areas)) < .2:
-        raise ValueError('Repeated fine marks may be artwork or screentone. No artwork was changed.')
+    dilated_glyphs = cv2.dilate(glyphs, np.ones((3, 3), np.uint8))
+    local = dilated_glyphs & safe
 
-    local = dilate_mask(glyphs, 2) & safe
-    if not np.any(local) or np.count_nonzero(local) > .55*rw*rh:
-        raise ValueError('No reliable text mask in this box. Adjust the selection and try again.')
+    if not np.any(local):
+        raise ValueError('No removable text ink found in this selection.')
 
     mask = np.zeros(image.shape[:2], np.uint8)
     interior = np.zeros_like(mask)
-    mask[y0:y1, x0:x1] = local
-    interior[y0:y1, x0:x1] = safe
+    mask[y0:y1, x0:x1] = (local > 0).astype(np.uint8) * 255
+    interior[y0:y1, x0:x1] = (safe > 0).astype(np.uint8) * 255
     return mask, interior
 
 

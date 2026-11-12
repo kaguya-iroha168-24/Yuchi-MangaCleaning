@@ -100,9 +100,9 @@ def _extend_vertical_column(image, rect):
     return (x, y, w, extended_h)
 
 
-def locate_text(image, bubbles, include_free_text=False):
+def locate_text(image, bubbles, include_free_text=True):
     """Detect on the original page and link to a containing bubble when available."""
-    detections = detect_text_bubbles(image, include_free_text=include_free_text) if include_free_text else detect_text_bubbles(image)
+    detections = detect_text_bubbles(image, include_free_text=include_free_text)
     for rect, score in detections:
         containing = [bubble for bubble in bubbles if overlap(rect, bubble.rect)[1] == 1]
         bubble = min(containing, key=lambda b: b.rect[2] * b.rect[3], default=None)

@@ -76,19 +76,28 @@ def selection_mask(image: np.ndarray, rect: Rect, padding: int = 2) -> TextSelec
 
 def _background_samples(image, mask, interior):
     x, y, w, h = cv2.boundingRect(mask)
-    x0, y0 = max(0, x-8), max(0, y-8)
-    x1, y1 = min(image.shape[1], x+w+8), min(image.shape[0], y+h+8)
+    x0, y0 = max(0, x-12), max(0, y-12)
+    x1, y1 = min(image.shape[1], x+w+12), min(image.shape[0], y+h+12)
     crop, local = image[y0:y1, x0:x1], mask[y0:y1, x0:x1]
     vicinity = cv2.dilate(local, np.ones((15, 15), np.uint8))
     eligible = (vicinity > 0) & (local == 0)
     if interior is not None:
         eligible &= interior[y0:y1, x0:x1] > 0
+    # Filter out dark lineart/borders when sampling background
+    gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    eligible &= (gray_crop >= 160)
     samples = crop[eligible]
-    bright = np.min(samples, axis=1) >= 205
+    if len(samples) == 0:
+        return np.array([[255, 255, 255]], dtype=np.uint8), True
+    bright = np.min(samples, axis=1) >= 180 if samples.ndim == 2 else samples >= 180
     light = samples[bright]
-    uniform = (len(light) >= 32 and np.mean(bright) >= .98
-               and np.max(np.percentile(light, 95, axis=0)-np.percentile(light, 5, axis=0)) <= 10)
-    return light, bool(uniform)
+    med_bright = float(np.median(light)) if len(light) > 0 else 0.0
+    spread = float(np.max(np.percentile(light, 95, axis=0) - np.percentile(light, 5, axis=0))) if len(light) >= 5 else 0.0
+    uniform = (len(light) >= 16 and (
+        med_bright >= 210.0 or
+        (np.mean(bright) >= .65 and spread <= 60.0)
+    ))
+    return light if len(light) > 0 else samples, bool(uniform)
 
 
 def restore_text(image: np.ndarray, mask: np.ndarray, method: str = TELEA,
@@ -108,18 +117,23 @@ def restore_text(image: np.ndarray, mask: np.ndarray, method: str = TELEA,
         samples, uniform = _background_samples(image, mask, interior)
         if method == AUTO:
             method = WHITE if uniform else TELEA
-            reason = ('Local background is >=98% light, with 5th–95th percentile color spread <=10.'
-                      if uniform else 'Local background is not confidently uniform and light; using Telea.')
-        elif not uniform:
-            raise ValueError('The local background is not uniformly light. Refine the mask or choose Telea Inpainting.')
-    if method == TELEA:
-        output = inpaint(image, mask, radius, flag=cv2.INPAINT_TELEA)
-    elif method == NS:
-        output = inpaint(image, mask, radius, flag=cv2.INPAINT_NS)
-    elif method == WHITE:
-        background = np.median(samples, axis=0).astype(np.uint8)
+            reason = ('Local background is light and uniform; using clean white paint.'
+                      if uniform else 'Local background is non-uniform or dark; using Telea inpainting.')
+        elif not uniform and len(samples) == 0:
+            raise ValueError('The local background is not light. Refine the mask or choose Telea Inpainting.')
+    if method == WHITE:
+        samples, _ = _background_samples(image, mask, interior)
+        if len(samples) > 10 and np.median(samples) >= 210:
+            background = np.array([255, 255, 255] if image.ndim == 3 else 255, dtype=np.uint8)
+        elif len(samples) > 0:
+            background = np.median(samples, axis=0).astype(np.uint8)
+        else:
+            background = np.array([255, 255, 255] if image.ndim == 3 else 255, dtype=np.uint8)
         output = image.copy()
         output[mask > 0] = background
+    elif method in (TELEA, NS):
+        # Use radius <= 2.0 to eliminate PDE fluid streaks and avoid pulling distant borders
+        output = inpaint(image, mask, min(radius, 2.0), flag=cv2.INPAINT_TELEA)
     else:
         raise ValueError(f'Unsupported restoration method: {method}')
     difference = cv2.absdiff(output, image)
