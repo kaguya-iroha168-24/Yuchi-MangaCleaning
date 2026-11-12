@@ -1292,7 +1292,13 @@ def main() -> None:
     import uvicorn
     global server
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port, access_log=False))
-    threading.Thread(target=warm_detector, args=(detector_startup_cancel,), daemon=True).start()
+    def _delayed_warm() -> None:
+        from time import sleep
+        sleep(2.5)
+        if not detector_startup_cancel.is_set():
+            warm_detector(detector_startup_cancel)
+
+    threading.Thread(target=_delayed_warm, daemon=True).start()
     if os.name == "nt" and os.environ.get("YUCHI_PARENT_PID", "").isdigit():
         def _stop_owned_runtime() -> None:
             detector_startup_cancel.set(); store.cancel.set()
