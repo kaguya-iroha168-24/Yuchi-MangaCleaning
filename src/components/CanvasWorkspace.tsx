@@ -72,17 +72,40 @@ function Ruler({ axis, length, scale, offset, limit, controller }: { axis: 'x' |
   </svg>;
 }
 
+export type CanvasTool = 'select' | 'pan' | 'manual' | 'text' | 'mask-add' | 'mask-erase' | 'heal-brush' | 'heal-pure' | 'heal-restore';
+
+type LayerOpacity = {
+  typeset: number;
+  mask: number;
+  working: number;
+  original: number;
+};
+
 type PaneProps = {
   activeLayer: 'bubble' | 'source' | 'dialogue' | null;
   title: string; source: 'original' | 'editing'; image: HTMLImageElement | null; comparison: HTMLImageElement | null; mask: HTMLImageElement | null; containers: HTMLImageElement | null;
   width: number; height: number; scale: number; controller: ViewportController; bubbles: Bubble[]; textRegions: TextRegion[]; selected: Set<string>; selectedTextId: string | null;
-  tool: 'select' | 'pan' | 'manual' | 'text' | 'mask-add' | 'mask-erase'; brushRadius: number; showRulers: boolean; showBoxes: boolean; showMask: boolean; onion: boolean;
+  tool: CanvasTool; brushRadius: number; showRulers: boolean; showBoxes: boolean; showMask: boolean; onion: boolean;
+  layerOpacity?: LayerOpacity; eyedropperActive?: boolean; pureColor?: [number, number, number];
   detectionMode: DetectionMode; interaction: RegionInteraction; editable: boolean; showRegions: boolean; showSelection: boolean;
   bubbleStatuses?: Record<string, 'raw' | 'draft' | 'done' | 'error' | 'excluded'>;
   onCommitBubble: (id: string, rect: RegionRect) => Promise<void>; onDeselect: () => void; onEditText: (region: TextRegion) => void; onCommitRegion: (id: string, rect: RegionRect) => Promise<void>; onGesture: (active: boolean) => void;
   onBubble: (id: string, multi: boolean) => void; onText: (id: string) => void; onRect: (rect: [number, number, number, number]) => void; onBrush?: (points: Point[]) => void; onEscape: () => void;
+  onBrushRadiusChange?: (radius: number) => void; onSampleColor?: (rgb: [number, number, number]) => void;
   typography: { session: TypographySession; dialogues: Dialogue[]; selected: string | null; visible: boolean; coverText?: boolean; onSelect: (id: string) => void; onEdit: (id: string) => void };
 };
+
+function samplePixelFromImage(img: HTMLImageElement | null, x: number, y: number): [number, number, number] | null {
+  if (!img) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.drawImage(img, Math.floor(x), Math.floor(y), 1, 1, 0, 0, 1, 1);
+  const data = ctx.getImageData(0, 0, 1, 1).data;
+  return [data[0], data[1], data[2]];
+}
 
 const CanvasPane = memo(function CanvasPane(props: PaneProps) {
   const host = useRef<HTMLDivElement>(null);
@@ -97,7 +120,7 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
   const [brushDraft, setBrushDraft] = useState<Point[]>([]);
   const [draft, setDraft] = useState<[number, number, number, number] | null>(null);
   const scale = props.scale;
-  const maskMode=props.tool.startsWith('mask-');
+  const maskMode = props.tool.startsWith('mask-') || props.tool.startsWith('heal-');
   const brushEnabled = maskMode && props.onBrush && props.editable && !view.peek;
   const textMode = props.detectionMode === 'text';
   const showTextBoxes = textMode && props.showBoxes && (props.source === 'original' || view.mode !== 'dual');
@@ -144,13 +167,28 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
         onKeyDown={event => { if (event.key === 'Escape') { props.controller.update({ peek: false }); props.onEscape(); } }}
         onBlur={() => { if (props.controller.getSnapshot().peek) props.controller.update({ peek: false }); }}>
         <Stage ref={stage} width={size.width} height={size.height} scaleX={scale} scaleY={scale} x={offset.x} y={offset.y}
-          onWheel={event => { event.evt.preventDefault(); const point = stage.current?.getPointerPosition() ?? { x: size.width / 2, y: size.height / 2 }; props.controller.update(zoomAt(view, event.evt.deltaY < 0 ? 1.11 : .9, point, size, props, scale)); }}
+          onWheel={event => {
+            event.evt.preventDefault();
+            if (event.evt.altKey && brushEnabled && props.onBrushRadiusChange) {
+              const step = Math.max(1, Math.round(props.brushRadius * 0.15));
+              const nextRadius = Math.max(1, Math.min(120, props.brushRadius + (event.evt.deltaY < 0 ? step : -step)));
+              props.onBrushRadiusChange(nextRadius);
+              return;
+            }
+            const point = stage.current?.getPointerPosition() ?? { x: size.width / 2, y: size.height / 2 };
+            props.controller.update(zoomAt(view, event.evt.deltaY < 0 ? 1.11 : .9, point, size, props, scale));
+          }}
           onPointerDown={event => {
             if (event.evt.button !== 0 && event.evt.button !== 1) return;
             host.current?.focus({ preventScroll: true });
             stage.current?.getContent().setPointerCapture(event.evt.pointerId);
             const point = native(); if (!point) return;
             props.controller.updatePointer({ point, source: props.source });
+            if ((props.eyedropperActive || (event.evt.altKey && props.tool === 'heal-pure')) && event.evt.button === 0 && props.onSampleColor) {
+              const sampled = samplePixelFromImage(props.image, point.x, point.y);
+              if (sampled) props.onSampleColor(sampled);
+              return;
+            }
             if (brushEnabled && event.evt.button === 0) { brushPoints.current = [point]; setBrushDraft([point]); }
             else if (props.tool === 'pan' || event.evt.button === 1 || event.evt.shiftKey && props.tool !== 'manual' && props.tool !== 'text') drag.current = { point: { x: event.evt.clientX, y: event.evt.clientY }, pan: view.pan };
             else if (props.tool === 'select' && props.editable && event.target === event.target.getStage()) {
@@ -174,12 +212,30 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
           onPointerLeave={() => brushCursor.current?.hide()}
           onLostPointerCapture={resetGesture}>
           <Layer listening={false}>
-            {props.onion && !view.peek ? <>{props.comparison && <CanvasImage image={props.comparison} width={props.width} height={props.height} />}<Group clipX={cut} clipY={0} clipWidth={props.width - cut} clipHeight={props.height}>{props.image && <CanvasImage image={props.image} width={props.width} height={props.height} />}</Group></> : raw && <CanvasImage image={raw} width={props.width} height={props.height} />}
+            {props.source === 'editing' && props.comparison && <CanvasImage image={props.comparison} width={props.width} height={props.height} opacity={(props.layerOpacity?.original ?? 100) / 100} />}
+            {props.onion && !view.peek ? <>{props.comparison && <CanvasImage image={props.comparison} width={props.width} height={props.height} opacity={(props.layerOpacity?.original ?? 100) / 100} />}<Group clipX={cut} clipY={0} clipWidth={props.width - cut} clipHeight={props.height}>{props.image && <CanvasImage image={props.image} width={props.width} height={props.height} opacity={(props.layerOpacity?.working ?? 100) / 100} />}</Group></> : raw && <CanvasImage image={raw} width={props.width} height={props.height} opacity={(props.source === 'original' || view.peek ? (props.layerOpacity?.original ?? 100) : (props.layerOpacity?.working ?? 100)) / 100} />}
             
-            {brushDraft.length > 0 && <Line points={brushDraft.flatMap(point => [point.x, point.y])} stroke={props.tool === 'mask-erase' ? '#e89a90' : '#a8dfca'} strokeWidth={props.brushRadius * 2} lineCap="round" lineJoin="round" opacity={.7} />}
-            {props.showMask && props.mask && <CanvasImage image={props.mask} width={props.width} height={props.height} />}
+            {brushDraft.length > 0 && (
+              <Line
+                points={brushDraft.flatMap(point => [point.x, point.y])}
+                stroke={
+                  props.tool === 'mask-erase'
+                    ? '#e89a90'
+                    : props.tool === 'heal-restore'
+                      ? '#34d399'
+                      : props.tool === 'heal-pure' && props.pureColor
+                        ? `rgb(${props.pureColor[0]},${props.pureColor[1]},${props.pureColor[2]})`
+                        : '#ef4444'
+                }
+                strokeWidth={props.brushRadius * 2}
+                lineCap="round"
+                lineJoin="round"
+                opacity={props.tool === 'heal-pure' ? 0.95 : 0.65}
+              />
+            )}
+            {props.showMask && props.mask && <CanvasImage image={props.mask} width={props.width} height={props.height} opacity={(props.layerOpacity?.mask ?? 100) / 100} />}
           </Layer>
-          {brushEnabled && <Layer listening={false}><Circle ref={brushCursor} visible={false} radius={props.brushRadius} stroke="#E63946" strokeWidth={2 / scale} /></Layer>}
+          {brushEnabled && <Layer listening={false}><Circle ref={brushCursor} visible={false} radius={props.brushRadius} stroke={props.tool === 'heal-restore' ? '#34d399' : props.tool === 'heal-pure' ? '#38bdf8' : '#E63946'} strokeWidth={2 / scale} /></Layer>}
           {draft && <Layer listening={false}><Rect x={draft[0]} y={draft[1]} width={draft[2]} height={draft[3]} stroke="#B52837" strokeWidth={2 / scale} dash={[7 / scale, 4 / scale]} fill="rgba(230,57,70,.12)" /></Layer>}
         </Stage>
         {!textMode && (props.showBoxes || selectedBubble) && !maskMode && (props.source==='original' || view.mode!=='dual' || layer==='bubble') && <TextRegionOverlay showHighlight={props.showSelection} selectionOnly={props.source==='original'} candidate regions={props.bubbles.filter(b=>(props.showBoxes && (props.source==='original' || view.mode!=='dual')) || b.id===selectedBubble).map(b => ({ id:b.id, rect:b.rect as RegionRect, text:'', number:props.bubbles.indexOf(b)+1, status: props.bubbleStatuses?.[b.id] ?? (b.excluded ? 'excluded' : 'raw') }))} reviewIds={new Set(props.bubbles.filter(b => b.confidence != null && b.confidence < .25).map(b => b.id))} selected={[...props.selected][0] ?? null} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='bubble'} controller={props.interaction} onSelect={id => props.onBubble(id,false)} onMultiSelect={props.onBubble} onEdit={() => {}} onCommit={props.onCommitBubble} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({point,source:props.source})} onWheel={event => {event.preventDefault();const bounds=host.current?.getBoundingClientRect();if(bounds) props.controller.update(zoomAt(view,event.deltaY<0?1.11:.9,{x:event.clientX-bounds.left,y:event.clientY-bounds.top},size,props,scale));}} />}
@@ -187,7 +243,7 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
           numberedText={showTextBoxes} selectionOnly={props.source==='original'}
           showHighlight={props.showSelection && props.activeLayer==='source'}
           regions={showTextBoxes ? props.textRegions.filter(region => region.origin === 'automatic_text_detection' || region.origin === 'manual' || region.id === props.selectedTextId) : props.textRegions.filter(region => region.id === props.selectedTextId)} selected={props.selectedTextId} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='source'} controller={props.interaction} onSelect={props.onText} onEdit={region => { const text = props.textRegions.find(item => item.id === region.id); if (text) props.onEditText(text); }} onCommit={props.onCommitRegion} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({ point, source: props.source })} onWheel={event => { event.preventDefault(); const bounds = host.current?.getBoundingClientRect(); if (bounds) props.controller.update(zoomAt(view, event.deltaY < 0 ? 1.11 : .9, { x: event.clientX - bounds.left, y: event.clientY - bounds.top }, size, props, scale)); }} />}
-        {props.source === 'editing' && !view.peek && <div className="typography-overlay-clip" style={{ clipPath: props.onion ? `inset(0 0 0 ${view.split*100}%)` : undefined }}><TypographyOverlay {...props.typography} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='dialogue'} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({ point, source: props.source })} onWheel={event => { event.preventDefault(); const bounds = host.current?.getBoundingClientRect(); if (bounds) props.controller.update(zoomAt(view, event.deltaY < 0 ? 1.11 : .9, { x: event.clientX-bounds.left, y: event.clientY-bounds.top }, size, props, scale)); }} /></div>}
+        {props.source === 'editing' && !view.peek && <div className="typography-overlay-clip" style={{ opacity: (props.layerOpacity?.typeset ?? 100) / 100, clipPath: props.onion ? `inset(0 0 0 ${view.split*100}%)` : undefined }}><TypographyOverlay {...props.typography} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='dialogue'} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({ point, source: props.source })} onWheel={event => { event.preventDefault(); const bounds = host.current?.getBoundingClientRect(); if (bounds) props.controller.update(zoomAt(view, event.deltaY < 0 ? 1.11 : .9, { x: event.clientX-bounds.left, y: event.clientY-bounds.top }, size, props, scale)); }} /></div>}
         {props.onion && <div className="onion-divider" role="slider" aria-label="Drag comparison divider" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(view.split * 100)} tabIndex={0} style={{ left: `${view.split * 100}%` }}
           onPointerDown={event => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); }}
           onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) { const bounds = host.current?.getBoundingClientRect(); if (bounds) props.controller.update({ split: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) }); } }}
@@ -202,9 +258,11 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
 export function CanvasWorkspace(props: {
   activeLayer: PaneProps['activeLayer']; controller: ViewportController; original: HTMLImageElement | null; working: HTMLImageElement | null; containers: HTMLImageElement | null; mask: HTMLImageElement | null;
   width: number; height: number; name: string; bubbles: Bubble[]; textRegions: TextRegion[]; selected: Set<string>; selectedTextId: string | null; tool: PaneProps['tool']; brushRadius: number; showRulers: boolean; showBoxes: boolean; showMask: boolean; showOriginal: boolean; showWorking: boolean;
+  layerOpacity?: LayerOpacity; eyedropperActive?: boolean; pureColor?: [number, number, number];
   bubbleStatuses?: Record<string, 'raw' | 'draft' | 'done' | 'error' | 'excluded'>;
   onCommitBubble: PaneProps['onCommitBubble']; onDeselect: () => void; detectionMode: DetectionMode; interaction: RegionInteraction; editable: boolean; showRegions: boolean; showSelection: boolean; onEditText: PaneProps['onEditText']; onCommitRegion: PaneProps['onCommitRegion']; onGesture: PaneProps['onGesture'];
   onBubble: PaneProps['onBubble']; onText: PaneProps['onText']; onRect: PaneProps['onRect']; onBrush: NonNullable<PaneProps['onBrush']>;
+  onBrushRadiusChange?: (radius: number) => void; onSampleColor?: (rgb: [number, number, number]) => void;
   typography: PaneProps['typography'];
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -215,7 +273,7 @@ export function CanvasWorkspace(props: {
   const scale = fitScale(area, props, view.fit, view.zoom);
   useEffect(() => { props.controller.updateMetrics({ ...area, imageWidth: props.width, imageHeight: props.height, scale }); }, [area.width, area.height, props.controller, props.width, props.height, scale]);
   useEffect(() => { const cancel = () => { if (props.controller.getSnapshot().peek) props.controller.update({ peek: false }); }; window.addEventListener('blur', cancel); return () => window.removeEventListener('blur', cancel); }, [props.controller]);
-  const common = { detectionMode: props.detectionMode, activeLayer: props.activeLayer, onCommitBubble: props.onCommitBubble, onDeselect: props.onDeselect, typography: props.typography, interaction: props.interaction, editable: props.editable, showRegions: props.showRegions, showSelection: props.showSelection, onEditText: props.onEditText, onCommitRegion: props.onCommitRegion, onGesture: props.onGesture, controller: props.controller, width: props.width, height: props.height, scale, bubbles: props.bubbles, textRegions: props.textRegions, selected: props.selected, selectedTextId: props.selectedTextId, tool: props.tool, brushRadius: props.brushRadius, showRulers: props.showRulers, showBoxes: props.showBoxes, containers: props.containers, bubbleStatuses: props.bubbleStatuses, onBubble: props.onBubble, onText: props.onText, onRect: props.onRect, onEscape: () => document.getElementById('canvas-zoom-out')?.focus() };
+  const common = { detectionMode: props.detectionMode, activeLayer: props.activeLayer, onCommitBubble: props.onCommitBubble, onDeselect: props.onDeselect, typography: props.typography, interaction: props.interaction, editable: props.editable, showRegions: props.showRegions, showSelection: props.showSelection, onEditText: props.onEditText, onCommitRegion: props.onCommitRegion, onGesture: props.onGesture, controller: props.controller, width: props.width, height: props.height, scale, bubbles: props.bubbles, textRegions: props.textRegions, selected: props.selected, selectedTextId: props.selectedTextId, tool: props.tool, brushRadius: props.brushRadius, showRulers: props.showRulers, showBoxes: props.showBoxes, containers: props.containers, bubbleStatuses: props.bubbleStatuses, layerOpacity: props.layerOpacity, eyedropperActive: props.eyedropperActive, pureColor: props.pureColor, onBrushRadiusChange: props.onBrushRadiusChange, onSampleColor: props.onSampleColor, onBubble: props.onBubble, onText: props.onText, onRect: props.onRect, onEscape: () => document.getElementById('canvas-zoom-out')?.focus() };
   return <>
     {view.mode === 'onion' && <div className="onion-controls"><label>Onion-Skin Comparison<input aria-label="Onion-Skin divider" type="range" min="0" max="100" value={Math.round(view.split * 100)} onChange={event => props.controller.update({ split: Number(event.target.value) / 100 })} /></label><span>Original ← → Editing</span></div>}
     <div className={`dual-canvas viewport-panes mode-${view.mode}`} ref={host} role="region" aria-label={`Page canvas: ${props.name}`}>

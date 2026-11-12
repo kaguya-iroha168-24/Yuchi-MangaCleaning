@@ -5,7 +5,7 @@ import { LoupePreview, MiniMap, ViewportReadout } from './CanvasWorkspace';
 import type { ViewportController } from '../ui/viewport';
 import { MangaCleanLogo, BoxToolIcon, BubbleDetectIcon, CleanInpaintIcon, ExportTrayIcon } from './MangaCleanIcons';
 
-export type StudioTool = 'select' | 'pan' | 'manual' | 'text' | 'mask-add' | 'mask-erase';
+export type StudioTool = 'select' | 'pan' | 'manual' | 'text' | 'mask-add' | 'mask-erase' | 'heal-brush' | 'heal-pure' | 'heal-restore';
 export type WorkflowStep = 1 | 2 | 3 | 4;
 export type DockTab = 'Script' | 'Style' | 'Layers' | 'Healing' | 'Image';
 export function FeatureBadge({ children = 'PLANNED' }: { children?: ReactNode }) { return <span className="feature-badge">{children}</span>; }

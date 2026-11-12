@@ -181,8 +181,11 @@ class GeminiTranslation(unittest.TestCase):
         main.store.redo.clear()
         self.assertEqual(client.get('/v1/translation/capabilities').status_code, 401)
         with patch('backend.translation.Gemini.translate', return_value=['Halo.']):
-            setup = client.post('/v1/translation/settings', headers=headers, json={'model': 'gemini-3.5-flash', 'key': 'fake-test-key-1234567'})
-        self.assertEqual(setup.json(), {'model': 'gemini-3.5-flash', 'configured': True, 'style': ''})
+            setup = client.post('/v1/translation/settings', headers=headers, json={'model': 'gemini-3.5-flash', 'key': 'fake-test-key-1234567', 'style': ''})
+        self.assertEqual(setup.status_code, 200)
+        self.assertEqual(setup.json()['model'], 'gemini-3.5-flash')
+        self.assertTrue(setup.json()['configured'])
+        self.assertEqual(setup.json()['style'], '')
         try:
             with patch('backend.translation.Gemini.translate', return_value=['OCR diterjemahkan']) as translate:
                 response = client.post('/v1/translation/start', headers=headers, json={'pageId': graph.page_id, 'scope': 'page'})

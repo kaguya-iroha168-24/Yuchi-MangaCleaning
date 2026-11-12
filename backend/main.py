@@ -12,6 +12,7 @@ from pathlib import Path
 import secrets
 import threading
 from time import time
+from types import SimpleNamespace
 from uuid import uuid4
 from typing import Literal
 from urllib.parse import urlsplit
@@ -40,6 +41,7 @@ from mangaclean.services.ocr import OCRCancelled, close_ocr, crop_region, ocr_co
 from mangaclean.services.project_io import load_project, save_project
 from mangaclean.services.chapter import chapter_manifest
 from backend.chapter_routes import chapter_state, open_chapter, save_chapter
+from backend.export_studio import StudioExportRequest, execute_studio_export
 from backend.system_telemetry import get_system_telemetry, validate_disk_paths, reveal_path_in_explorer
 from mangaclean.services.yuchi_process import close_detector, detection_config, warm_detector
 from mangaclean.services.typesetting import available_fonts, render_dialogue, composite_page, dialogue_cover_rect, page_artwork, clear_render_cache, close_typesetter, TypesettingUnavailable
@@ -641,10 +643,31 @@ def prepare_healing(payload: HealingRequest, request: Request):
         return prepare_preview(mask, safe, analysis, payload.bubbleId, healing=True)
 
 
+def _rasterize_stroke(height: int, width: int, points: list[tuple[int, int]], radius: int) -> np.ndarray:
+    if any(not (0 <= x < width and 0 <= y < height) for x, y in points):
+        raise HTTPException(422, 'Brush berada di luar koordinat native.')
+    stroke = np.zeros((height, width), np.uint8)
+    for point in points:
+        cv2.circle(stroke, point, radius, 255, -1)
+    for a, b in zip(points, points[1:]):
+        cv2.line(stroke, a, b, 255, radius * 2 + 1)
+    return stroke
+
+
+def _roi_bounds(mask: np.ndarray, padding: int) -> tuple[int, int, int, int]:
+    ys, xs = np.where(mask > 0)
+    h, w = mask.shape[:2]
+    x0 = max(0, int(xs.min()) - padding)
+    y0 = max(0, int(ys.min()) - padding)
+    x1 = min(w, int(xs.max()) + 1 + padding)
+    y1 = min(h, int(ys.max()) + 1 + padding)
+    return x0, y0, x1, y1
+
+
 class MaskEditRequest(BaseModel):
     previewId: str
     mode: str
-    radius: int = Field(default=5, ge=1, le=80)
+    radius: int = Field(default=5, ge=1, le=120)
     points: list[tuple[int, int]] = Field(min_length=1, max_length=2000)
 
 
@@ -659,11 +682,7 @@ def edit_preview(payload: MaskEditRequest, request: Request):
         if preview.get('textRegionId') and payload.mode == 'add':
             raise HTTPException(422, 'A text-only cleaning mask can be reduced, but cannot be expanded. Adjust the text box for a new mask.')
         height, width = doc.source.shape[:2]
-        if any(not (0 <= x < width and 0 <= y < height) for x, y in payload.points):
-            raise HTTPException(422, 'Brush berada di luar koordinat native.')
-        stroke = np.zeros((height, width), np.uint8)
-        for point in payload.points: cv2.circle(stroke, point, payload.radius, 255, -1)
-        for a, b in zip(payload.points, payload.points[1:]): cv2.line(stroke, a, b, 255, payload.radius * 2 + 1)
+        stroke = _rasterize_stroke(height, width, payload.points, payload.radius)
         clipped = int(np.count_nonzero(stroke & (255-preview['safe'])))
         stroke &= preview['safe']
         mask = preview['mask'].copy()
@@ -766,6 +785,8 @@ class CleanRequest(BaseModel):
     previewId: str
     method: str = AUTO
     radius: float = Field(default=3, ge=1, le=12)
+    dilation: int = Field(default=0, ge=0, le=24)
+    contextPadding: int = Field(default=64, ge=16, le=128)
 
 
 def apply_clean(payload: CleanRequest, check_cancel=None):
@@ -779,10 +800,29 @@ def apply_clean(payload: CleanRequest, check_cancel=None):
     healing = preview.get('healing', False)
     text_only = bool(preview.get('textRegionId'))
     mask = preview["mask"].copy(); before = doc.working.copy()
+    if payload.dilation > 0 and np.any(mask):
+        k = payload.dilation * 2 + 1
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        if preview.get('safe') is not None:
+            mask &= preview['safe']
+    roi_used = None
     try:
-        result, checks = execute(before, mask, payload.method, payload.radius,
-                                 preview['safe'] if bubbles or healing or text_only else None,
-                                 preview['proposals'], restore_text)
+        if healing and not bubbles and not preview['proposals'] and np.any(mask):
+            rx0, ry0, rx1, ry1 = _roi_bounds(mask, payload.contextPadding)
+            roi_used = [rx0, ry0, rx1 - rx0, ry1 - ry0]
+            safe_roi = preview['safe'][ry0:ry1, rx0:rx1] if preview.get('safe') is not None else None
+            res_roi, checks = execute(before[ry0:ry1, rx0:rx1], mask[ry0:ry1, rx0:rx1],
+                                      payload.method, payload.radius, safe_roi, [], restore_text)
+            composited = before.copy()
+            composited[ry0:ry1, rx0:rx1] = res_roi.image
+            result = SimpleNamespace(
+                image=composited, method=res_roi.method, masked_pixels=res_roi.masked_pixels,
+                changed_pixels=res_roi.changed_pixels, outside_changed_pixels=res_roi.outside_changed_pixels,
+            )
+        else:
+            result, checks = execute(before, mask, payload.method, payload.radius,
+                                     preview['safe'] if bubbles or healing or text_only else None,
+                                     preview['proposals'], restore_text)
     except ValueError as error: raise HTTPException(422, str(error)) from error
     if result.changed_pixels == 0: raise HTTPException(422, "Tidak ada piksel berubah.")
     if check_cancel is not None: check_cancel()
@@ -806,7 +846,7 @@ def apply_clean(payload: CleanRequest, check_cancel=None):
     doc.revision += 1; doc.dirty = True; store.preview = None
     return {"state": public_state(), "result": {"method": result.method, "maskedPixels": result.masked_pixels,
             "changedPixels": result.changed_pixels, "outsideChangedPixels": result.outside_changed_pixels,
-            "checks": checks}}
+            "checks": checks, "roi": roi_used}}
 
 
 @app.post("/v1/clean/confirm")
@@ -815,6 +855,102 @@ def clean(payload: CleanRequest, request: Request):
     with store.lock:
         check_idle(editing=True)
         return apply_clean(payload)
+
+
+class DirectHealingRequest(ActivePageRequest):
+    mode: Literal['paint', 'restore']
+    radius: int = Field(default=12, ge=1, le=120)
+    points: list[tuple[int, int]] = Field(min_length=1, max_length=2000)
+    color: tuple[int, int, int] = (255, 255, 255)
+
+
+@app.post("/v1/healing/direct")
+def healing_direct(payload: DirectHealingRequest, request: Request):
+    """Apply instant pure color paint or restore raw original pixels within a brush stroke."""
+    require_auth(request.headers.get("authorization"))
+    with store.lock:
+        check_idle(editing=True)
+        doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, "Page changed before the brush stroke could be applied.")
+        if doc.composition.get("artwork_locked"):
+            raise HTTPException(409, "Unlock the working artwork to paint or restore pixels.")
+        height, width = doc.source.shape[:2]
+        stroke = _rasterize_stroke(height, width, payload.points, payload.radius)
+        if not np.any(stroke):
+            raise HTTPException(422, "Brush stroke did not affect any pixels.")
+        store.capture(('working',))
+        if payload.mode == 'restore':
+            doc.working[stroke > 0] = doc.source[stroke > 0]
+        else:
+            r, g, b = [max(0, min(255, int(c))) for c in payload.color]
+            doc.working[stroke > 0] = (b, g, r)
+        doc.revision += 1
+        doc.dirty = True
+        store.preview = None
+        return {"state": public_state(), "changedPixels": int(np.count_nonzero(stroke))}
+
+
+class RoiHealRequest(ActivePageRequest):
+    rect: tuple[StrictInt, StrictInt, StrictInt, StrictInt] | None = None
+    points: list[tuple[int, int]] | None = None
+    radius: int = Field(default=12, ge=1, le=120)
+    dilation: int = Field(default=2, ge=0, le=24)
+    contextPadding: int = Field(default=64, ge=16, le=128)
+    method: str = AUTO
+
+
+@app.post("/v1/healing/roi")
+def healing_roi(payload: RoiHealRequest, request: Request):
+    """Smart bounding-box ROI crop healing on stroke release or rectangle draw."""
+    require_auth(request.headers.get("authorization"))
+    if payload.method not in {AUTO, TELEA, WHITE, NS}:
+        raise HTTPException(400, "Metode cleaning tidak valid.")
+    with store.lock:
+        check_idle(editing=True)
+        doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, "Page changed before healing could run.")
+        if doc.composition.get("artwork_locked"):
+            raise HTTPException(409, "Unlock the working artwork to heal it.")
+        height, width = doc.source.shape[:2]
+        if payload.points:
+            mask = _rasterize_stroke(height, width, payload.points, payload.radius)
+        elif payload.rect:
+            x, y, rw, rh = payload.rect
+            if min(x, y) < 0 or min(rw, rh) < 4 or x + rw > width or y + rh > height:
+                raise HTTPException(422, "Keep healing rectangle inside page bounds.")
+            mask = np.zeros((height, width), np.uint8)
+            mask[y:y + rh, x:x + rw] = 255
+        else:
+            raise HTTPException(422, "Provide brush points or a repair rectangle.")
+        if payload.dilation > 0:
+            k = payload.dilation * 2 + 1
+            mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        if not np.any(mask):
+            raise HTTPException(422, "Empty healing mask.")
+        rx0, ry0, rx1, ry1 = _roi_bounds(mask, payload.contextPadding)
+        roi_img = doc.working[ry0:ry1, rx0:rx1].copy()
+        roi_mask = mask[ry0:ry1, rx0:rx1]
+        try:
+            res = restore_text(roi_img, roi_mask, method=payload.method, radius=2.0)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        if res.changed_pixels == 0:
+            raise HTTPException(422, "Tidak ada piksel berubah.")
+        store.capture(('working',))
+        doc.working[ry0:ry1, rx0:rx1] = res.image
+        doc.revision += 1
+        doc.dirty = True
+        store.preview = None
+        return {
+            "state": public_state(),
+            "result": {
+                "method": res.method,
+                "changedPixels": res.changed_pixels,
+                "roi": [rx0, ry0, rx1 - rx0, ry1 - ry0],
+            },
+        }
 
 
 @app.post("/v1/undo")
@@ -1301,6 +1437,26 @@ def export(kind: str, request: Request):
             media = "image/png" if kind == "png" else "image/jpeg"
         else: raise HTTPException(404, "Format ekspor tidak didukung.")
         return FileResponse(path, media_type=media, filename=name, background=BackgroundTask(path.unlink, missing_ok=True))
+
+
+@app.get("/v1/export/default-dir")
+def export_default_dir(request: Request):
+    require_auth(request.headers.get("authorization"))
+    default_dir = (ROOT / "outputs" / "exports").resolve()
+    return {"directory": str(default_dir)}
+
+
+@app.post("/v1/export/studio")
+def export_studio(payload: StudioExportRequest, request: Request):
+    require_auth(request.headers.get("authorization"))
+    with store.lock:
+        check_idle()
+        try:
+            return execute_studio_export(store, ROOT, payload)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        except (OSError, TypesettingUnavailable) as error:
+            raise HTTPException(422, f"Export failed: {error}") from error
 
 
 def main() -> None:

@@ -3,9 +3,11 @@
 :root { font-family: Inter, "Segoe UI Variable", "Segoe UI", sans-serif; color: var(--studio-text); background: var(--studio-elevated); font-synthesis: none; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 940px; }
-button, select, textarea { font: inherit; }
-button { cursor: pointer; }
-button:disabled { cursor: not-allowed; opacity: .43; }
+@layer base {
+  button, select, textarea { font: inherit; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: .43; }
+}
 button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--studio-line); outline-offset: 2px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .app { --control-height: 33px; --row-height: 56px; height: 100vh; min-height: 590px; display: flex; flex-direction: column; overflow: hidden; background: var(--studio-elevated); color: var(--studio-text); font-size: 13px; }

@@ -328,6 +328,98 @@ fn reveal_path(path: String) -> Result<bool, String> {
     }
 }
 
+#[tauri::command]
+fn pick_export_directory(initial_dir: Option<String>) -> Result<Option<String>, String> {
+    #[cfg(windows)] {
+        use std::os::windows::process::CommandExt;
+        let init = initial_dir.unwrap_or_default().replace('\'', "''");
+        let ps_script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
+             $d.Description = 'Select Publisher Export Destination Folder'; \
+             $d.UseDescriptionForTitle = $true; \
+             $init = '{init}'; \
+             if ($init -and (Test-Path $init)) {{ $d.SelectedPath = $init }}; \
+             if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ Write-Output $d.SelectedPath }}"
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Sta", "-Command", &ps_script])
+            .creation_flags(0x08000000)
+            .output()
+            .map_err(|e| format!("Failed to open folder picker: {e}"))?;
+        if !out.status.success() {
+            return Ok(None);
+        }
+        let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if chosen.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(chosen))
+        }
+    }
+    #[cfg(not(windows))] {
+        let _ = initial_dir;
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn open_exported_file(path: String, prefer_krita: bool) -> Result<bool, String> {
+    #[cfg(windows)] {
+        use std::os::windows::process::CommandExt;
+        let p = std::path::Path::new(&path);
+        if !p.exists() {
+            return Ok(false);
+        }
+        if prefer_krita {
+            let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+            if let Ok(pf) = std::env::var("ProgramFiles") {
+                candidates.push(std::path::Path::new(&pf).join("Krita (x64)").join("bin").join("krita.exe"));
+                candidates.push(std::path::Path::new(&pf).join("Krita").join("bin").join("krita.exe"));
+            }
+            if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
+                candidates.push(std::path::Path::new(&pf86).join("Krita").join("bin").join("krita.exe"));
+            }
+            if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                candidates.push(std::path::Path::new(&local).join("Programs").join("Krita").join("bin").join("krita.exe"));
+            }
+            if let Some(found) = candidates.into_iter().find(|c| c.is_file()) {
+                let _ = std::process::Command::new(found).arg(&path).spawn();
+                return Ok(true);
+            }
+            // Check PATH
+            if let Ok(where_out) = std::process::Command::new("where")
+                .arg("krita")
+                .creation_flags(0x08000000)
+                .output()
+            {
+                if where_out.status.success() {
+                    let first = String::from_utf8_lossy(&where_out.stdout)
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if !first.is_empty() {
+                        let _ = std::process::Command::new(first).arg(&path).spawn();
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        // OS default handler fallback
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", &path]);
+        cmd.creation_flags(0x08000000);
+        let _ = cmd.spawn();
+        Ok(true)
+    }
+    #[cfg(not(windows))] {
+        let _ = (path, prefer_krita);
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::frontend_origin;
@@ -702,7 +794,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![bootstrap, get_system_telemetry, reveal_path])
+        .invoke_handler(tauri::generate_handler![bootstrap, get_system_telemetry, reveal_path, pick_export_directory, open_exported_file])
         .build(tauri::generate_context!())
         .expect("Failed to build Yuchi Labs Tauri")
         .run(|app, event| {

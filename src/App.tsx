@@ -9,19 +9,22 @@ import { MangaCleanLogo } from './components/MangaCleanIcons';
 import { Api, ApiError, type DetectionMode, type ExportPreflight, type Job, type LayerPatch, type PageComposition, type Preview, type State, type TextRegion, connect } from './api';
 import { ChapterNavigator } from './components/ChapterNavigator';
 import { AtelierHomeScreen } from './components/AtelierHomeScreen';
-import { addOrUpdateRecentProject, updateProjectInfo, createThumbnailDataUrl } from './utils/recentProjectsStorage';
+import { addOrUpdateRecentProject, updateProjectInfo, createThumbnailDataUrl, loadRecentProjects } from './utils/recentProjectsStorage';
 import { ContextToolbar, DockResizeHandle, EngineStatusBar, FeatureBadge, InspectorDock, PageNavigator, StudioHeader, ToolRail, type DockTab } from './components/StudioShell';
-import { PreferencesDialog, QuickExportDialog, type TranslationSettings } from './components/PreferencesDialog';
+import { PreferencesDialog, type TranslationSettings } from './components/PreferencesDialog';
+import { ExportStudioModal } from './components/ExportStudioModal';
+import { LayersPanel, type LayerOpacityState } from './components/LayersPanel';
+import { HealingPanel, type HealingPatchEntry, type HealingToolMode } from './components/HealingPanel';
 import { blocksStudioShortcuts, resolveStudioShortcut } from './ui/shortcuts';
-import { CanvasWorkspace, ViewportModeControls, ViewportZoomControls } from './components/CanvasWorkspace';
+import { CanvasWorkspace, ViewportModeControls, ViewportZoomControls, type CanvasTool } from './components/CanvasWorkspace';
 import { SourceTextDialog, sessionForRegion, type TextEditSession } from './components/SourceTextDialog';
 import { RegionInteraction, type RegionRect } from './ui/regionEditing';
 import { TypographySession } from './ui/typography';
-import { TypographyCardControls, TypographyControls, TypographyLayerList, TypographyExportNotice } from './components/Typography';
+import { TypographyCardControls, TypographyControls, TypographyLayerList } from './components/Typography';
 import { ImageAdjustments } from './components/ImageAdjustments';
 import { ViewportController, type Point } from './ui/viewport';
 
-type Tool = 'select' | 'pan' | 'manual' | 'text' | 'mask-add' | 'mask-erase';
+type Tool = CanvasTool;
 type Density = 'Balanced' | 'Compact' | 'Comfortable';
 const emptySelection = new Set<string>();
 function useImage(url: string | null): HTMLImageElement | null {
@@ -88,9 +91,17 @@ export default function App() {
   const bindingProjectIdRef = useRef<string | null>(null);
   const originalUrl = pageFrame?.originalUrl ?? null;
 
-  const [brushRadius, setBrushRadius] = useState(5);
+  const [brushRadius, setBrushRadius] = useState(15);
   const [maskUrl, setMaskUrl] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [layerOpacity, setLayerOpacity] = useState<LayerOpacityState>({ typeset: 100, mask: 70, working: 100, original: 100 });
+  const [healingMode, setHealingMode] = useState<HealingToolMode>('ai-brush');
+  const [healingDilation, setHealingDilation] = useState(2);
+  const [healingContextPadding, setHealingContextPadding] = useState(64);
+  const [autoHealOnRelease, setAutoHealOnRelease] = useState(true);
+  const [pureColor, setPureColor] = useState<[number, number, number]>([255, 255, 255]);
+  const [eyedropperActive, setEyedropperActive] = useState(false);
+  const [healingPatches, setHealingPatches] = useState<Record<string, HealingPatchEntry[]>>({});
   const [method, setMethod] = useState('Auto / Recommended');
   const [provider, setProvider] = useState('shima_v1');
   const [detectionMode, setDetectionMode] = useState<DetectionMode>(() => localStorage.getItem('yuchi-tauri-detection-mode') === 'text' ? 'text' : 'bubble');
@@ -311,6 +322,18 @@ export default function App() {
         return;
       }
       if (event.key === 'Escape' && !settings && !exportOpen && !textEditor && !regionGesture) {
+        if (eyedropperActive) {
+          event.preventDefault();
+          setEyedropperActive(false);
+          return;
+        }
+        if (dockTab === 'Healing' && preview && !busy && !running) {
+          event.preventDefault();
+          setPreview(null);
+          setMaskUrl(null);
+          setShowMask(false);
+          return;
+        }
         if (activeView === 'home' && document) {
           event.preventDefault();
           setActiveView('workspace');
@@ -321,6 +344,19 @@ export default function App() {
         event.preventDefault();
         chooseFolder();
         return;
+      }
+      if (!blocksStudioShortcuts(event.target, event.isComposing) && !settings && !exportOpen && !textEditor && !regionGesture && document) {
+        if (event.key === '[' || event.key === ']') {
+          event.preventDefault();
+          const delta = event.key === '[' ? -4 : 4;
+          setBrushRadius(prev => Math.max(1, Math.min(120, prev + delta)));
+          return;
+        }
+        if (event.key === 'Enter' && dockTab === 'Healing' && preview && !busy && !running) {
+          event.preventDefault();
+          clean();
+          return;
+        }
       }
       const shortcut = resolveStudioShortcut(event);
       if (!shortcut) return;
@@ -568,11 +604,6 @@ export default function App() {
     });
     sourceCommit.current = pending;void pending.catch(reportError);
   };
-  const exportPages = (kind: 'png' | 'jpeg') => { if(api)void action(async()=>{await flushEdits();setSaveNotice('Exporting chapter…');
-    const result = await api.post<{files: {path:string}[];errors: {message:string}[];directory:string}>('/v1/pages/export',{kind,ids:[...queuedPages]});
-    setSaveNotice(`Exported and verified ${result.files.length} page(s): ${result.directory}`);
-    if(result.errors.length)throw new Error(`${result.errors.length} page(s) could not be exported. Existing exports were retained.`);
-  }); };
   const requestSelectionPreview = (client: Api) => {
     if (detectionMode === 'text' && activeLayer === 'source' && activeText && document) {
       return client.post<Preview>(`/v1/text-regions/${encodeURIComponent(activeText.id)}/preview`, { pageId: document.pageId });
@@ -581,13 +612,153 @@ export default function App() {
     if (selected.size > 1) return client.post<Preview>('/v1/bubbles/preview', { ids: [...selected] });
     return client.post<Preview>(`/v1/bubbles/${active!.id}/preview`);
   };
-  const editMask = (points: Point[]) => { if (api && preview && document && !busy && !running) void action(async () => { const result = await api.post<Preview>('/v1/preview/edit', { previewId: preview.id, mode: tool === 'mask-erase' ? 'erase' : 'add', radius: brushRadius, points: points.map(point => [Math.max(0, Math.min(document.width - 1, Math.round(point.x))), Math.max(0, Math.min(document.height - 1, Math.round(point.y)))]) }); setPreview(result); const url = await api.image('preview-overlay'); setMaskUrl(previous => { if (previous) URL.revokeObjectURL(previous); return url; }); setShowMask(true); }); };
+  const recordHealingPatch = (label: string, roi?: number[], changedPixels = 0) => {
+    if (!document) return;
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const entry: HealingPatchEntry = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      label,
+      roi,
+      changedPixels,
+      time,
+    };
+    setHealingPatches(prev => ({
+      ...prev,
+      [document.pageId]: [entry, ...(prev[document.pageId] ?? [])].slice(0, 15),
+    }));
+  };
+  const clampPoints = (points: Point[]) =>
+    document
+      ? points.map(point => [
+          Math.max(0, Math.min(document.width - 1, Math.round(point.x))),
+          Math.max(0, Math.min(document.height - 1, Math.round(point.y))),
+        ])
+      : [];
+  const editMask = (points: Point[]) => {
+    if (!api || !document || busy || running) return;
+    const clamped = clampPoints(points);
+    if (!clamped.length) return;
+    if (tool === 'heal-pure' || tool === 'heal-restore') {
+      void action(async () => {
+        await flushEdits();
+        const mode = tool === 'heal-pure' ? 'paint' : 'restore';
+        await api.post('/v1/healing/direct', {
+          pageId: document.pageId,
+          mode,
+          radius: brushRadius,
+          points: clamped,
+          color: pureColor,
+        });
+        await refresh(api, true);
+        recordHealingPatch(
+          mode === 'paint'
+            ? `Pure Brush (${pureColor[0]},${pureColor[1]},${pureColor[2]})`
+            : 'Restore Raw Pixels',
+          undefined,
+          clamped.length,
+        );
+      }, tool === 'heal-pure' ? 'Painting pure pixels…' : 'Restoring raw pixels…');
+      return;
+    }
+    if (tool === 'heal-brush') {
+      if (!autoHealOnRelease && preview) {
+        void action(async () => {
+          const result = await api.post<Preview>('/v1/preview/edit', {
+            previewId: preview.id,
+            mode: 'add',
+            radius: brushRadius,
+            points: clamped,
+          });
+          setPreview(result);
+          const url = await api.image('preview-overlay');
+          setMaskUrl(previous => { if (previous) URL.revokeObjectURL(previous); return url; });
+          setShowMask(true);
+        });
+        return;
+      }
+      void action(async () => {
+        await flushEdits();
+        const response = await api.post<{ result?: { roi?: number[]; changedPixels?: number } }>('/v1/healing/roi', {
+          pageId: document.pageId,
+          points: clamped,
+          radius: brushRadius,
+          dilation: healingDilation,
+          contextPadding: healingContextPadding,
+          method,
+        });
+        await refresh(api, true);
+        recordHealingPatch('AI Brush ROI', response.result?.roi, response.result?.changedPixels ?? 0);
+      }, 'Smart ROI Inpainting…');
+      return;
+    }
+    if (!preview) return;
+    void action(async () => {
+      const result = await api.post<Preview>('/v1/preview/edit', {
+        previewId: preview.id,
+        mode: tool === 'mask-erase' ? 'erase' : 'add',
+        radius: brushRadius,
+        points: clamped,
+      });
+      setPreview(result);
+      const url = await api.image('preview-overlay');
+      setMaskUrl(previous => { if (previous) URL.revokeObjectURL(previous); return url; });
+      setShowMask(true);
+    });
+  };
   const clean = () => { if (api && canClean) void action(async () => {
     await flushEdits();
     const prepared = preview ?? await requestSelectionPreview(api);
     if(!prepared.maskPixels)throw new Error('The selected area has no valid cleaning mask. Correct the mask first.');
-    await api.post('/v1/clean/confirm',{previewId:prepared.id,method,radius:3});setPreview(null);setMaskUrl(null);setManualRect(null);setShowMask(false);setTool('select');await refresh(api,true);
+    const response = await api.post<{ result?: { roi?: number[]; changedPixels?: number } }>('/v1/clean/confirm',{
+      previewId:prepared.id,
+      method,
+      radius:3,
+      dilation: healingDilation,
+      contextPadding: healingContextPadding,
+    });
+    setPreview(null);setMaskUrl(null);setManualRect(null);setShowMask(false);setTool('select');await refresh(api,true);
+    recordHealingPatch('Mask Repair Applied', response.result?.roi, response.result?.changedPixels ?? prepared.maskPixels);
   }, 'Cleaning selected pixels…'); };
+  const handleRectComplete = (rect: [number, number, number, number]) => {
+    setManualRect(rect);
+    if (tool === 'text') {
+      createDialogue(rect);
+      return;
+    }
+    if (tool === 'manual' && dockTab === 'Healing' && api && document && !composition.artwork_locked && !busy && !running) {
+      if (autoHealOnRelease) {
+        void action(async () => {
+          await flushEdits();
+          const response = await api.post<{ result?: { roi?: number[]; changedPixels?: number } }>('/v1/healing/roi', {
+            pageId: document.pageId,
+            rect,
+            dilation: healingDilation,
+            contextPadding: healingContextPadding,
+            method,
+          });
+          await refresh(api, true);
+          recordHealingPatch('Rect Smart ROI', response.result?.roi ?? rect, response.result?.changedPixels ?? rect[2] * rect[3]);
+        }, 'Smart ROI Rect Repair…');
+      } else {
+        void action(async () => {
+          await flushEdits();
+          setPreview(await api.post<Preview>('/v1/healing/preview', { pageId: document.pageId, rect }));
+          setMaskUrl(null);
+          setShowMask(true);
+          setTool('mask-add');
+        });
+      }
+    }
+  };
+  const selectHealingMode = (nextMode: HealingToolMode) => {
+    setHealingMode(nextMode);
+    setEyedropperActive(false);
+    if (nextMode === 'ai-brush') setTool('heal-brush');
+    else if (nextMode === 'rect-repair') { resetSelection(); setTool('manual'); }
+    else if (nextMode === 'mask-erase') { setTool(preview ? 'mask-erase' : 'heal-restore'); }
+    else if (nextMode === 'pure-paint') setTool('heal-pure');
+    else if (nextMode === 'restore-raw') setTool('heal-restore');
+  };
   const selectBubble = (id: string, multi: boolean) => { if (!multi) setActiveTextId(null); setSelected(previous => { const next = multi ? new Set(previous) : new Set<string>(); if (next.has(id)) next.delete(id); else next.add(id); return next; }); setPreview(null); setMaskUrl(null); };
   const download = (kind: string) => { if (api) void action(async () => { await flushEdits(); const receipt = await api.save(kind); setState(receipt.state); setSaveNotice((kind === 'project' ? 'Saved and verified: ' : 'Exported and verified: ') + receipt.path); }); };
   const changeComposition = (settings: PageComposition) => {
@@ -915,8 +1086,8 @@ export default function App() {
           processing={jobActive}
           document={displayDocument}
           busy={busy || running || regionGesture || Boolean(textEditor)}
-      tools={document && <ToolRail tool={tool} onTool={activateTool} ready={Boolean(api)} hasPreview={Boolean(preview && !preview.textRegionId)} busy={busy || running || regionGesture || Boolean(textEditor)} canPreview={canPreview} cleanHint={headerCleanHint} onPreview={preparePreview} onHealing={()=>{setDockTab('Healing');setRightCollapsed(false);}} />}
-      onOpen={choose} onOpenFolder={chooseFolder} onSave={() => download('project')} onExport={() => setExportOpen(true)} onUndo={undo} onRedo={redo} onSettings={() => setSettings(true)}
+      tools={document && <ToolRail tool={tool} onTool={activateTool} ready={Boolean(api)} hasPreview={Boolean(preview && !preview.textRegionId)} busy={busy || running || regionGesture || Boolean(textEditor)} canPreview={canPreview} cleanHint={headerCleanHint} onPreview={preparePreview} onHealing={()=>{setDockTab('Healing');setRightCollapsed(false);setHealingMode('ai-brush');setTool('heal-brush');}} />}
+      onOpen={choose} onOpenFolder={chooseFolder} onSave={() => download('project')} onExport={() => { void flushEdits().finally(() => setExportOpen(true)); }} onUndo={undo} onRedo={redo} onSettings={() => setSettings(true)}
       onTranslate={api && document && !pendingPageId ? translate : undefined} onProcess={()=>scan()}
       onToggleAll={()=>setDetectAll(value=>!value)} detectAll={detectAll && pageCount > 1}
       pageCount={pageCount} pages={document ? {number:pageIndex + 1,previous:goToAdjacentPage(-1),next:goToAdjacentPage(1)} : undefined}
@@ -938,35 +1109,63 @@ export default function App() {
       <div className="canvas-column">
         {saveNotice && <div className="save-notice" role="status">{saveNotice}</div>}
         {error && <div className="error-banner" role="alert"><CircleHelp size={17} /><div><span>{error}</span>{exportIssues && <><p>Halaman {exportIssues.pageNumber}: {exportIssues.pageName}. Proyek tetap dapat disimpan.</p><ul style={{ maxHeight: 160, overflowY: 'auto' }}>{exportIssues.issues.map(issue => <li key={issue.dialogueId}><strong>{issue.dialogueLabel}</strong> · {issue.candidateNumber ? `Candidate ${String(issue.candidateNumber).padStart(2, '0')}` : 'Tanpa kandidat terhubung'}<br />{issue.reason}<br />Requested: {issue.requestedFamily} / {issue.requestedWeight} / {issue.requestedSize}px · Actual: {issue.resolvedFamily ?? 'tidak tersedia'} / {issue.resolvedWeight ?? '—'} / {issue.resolvedSize ?? '—'}px<br /><small>Dialogue ID: {issue.dialogueId} · Bubble ID: {issue.bubbleId ?? '—'}</small><br /><button disabled={busy || running || document?.pageId !== exportIssues.pageId || !document?.dialogues.some(text => text.id === issue.dialogueId)} onClick={() => { const text = document?.dialogues.find(text => text.id === issue.dialogueId); if (!text || document?.pageId !== exportIssues.pageId) return; selectDialogue(text.id); setShowTypography(true); setShowSelection(true); viewport.update({ pan: { x: text.x + text.width / 2 - document.width / 2, y: text.y + text.height / 2 - document.height / 2 } }); }}>Pilih dan perbaiki Dialogue</button></li>)}</ul></>}</div>{!api && !exportIssues && <button disabled={busy} onClick={reconnect}>Reconnect</button>}<button aria-label="Dismiss error" onClick={() => { setError(''); setExportIssues(null); }}><X size={16} /></button></div>}
-        {document ? <CanvasWorkspace bubbleStatuses={bubbleStatuses} detectionMode={detectionMode} showRulers={showRulers} activeLayer={cachedPreview ? null : activeLayer} typography={{ session: typography, dialogues: cachedPreview ? [] : document.dialogues ?? [], selected: selectedDialogueId, visible: !cachedPreview && showTypography, coverText: composition.text_mode === 'overlay', onSelect: selectDialogue, onEdit: selectDialogue }} interaction={interaction} editable={Boolean(api) && !pendingPageId && !busy && !running && !textEditor} showRegions={showRegions} showSelection={!cachedPreview && showSelection} onEditText={editTextRegion} onDeselect={() => { setActiveLayer(null);setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); }} onCommitBubble={commitBubbleRect} onCommitRegion={commitRegionRect} onGesture={value => { setRegionGesture(value); if (value) { setSaveNotice(''); setPreview(null); setMaskUrl(null); } }} controller={viewport} original={cachedPreview?.original ?? original} working={cachedPreview?.working ?? working} containers={containers} mask={cachedPreview ? null : mask} width={cachedPreview ? pendingPage!.width : document.width} height={cachedPreview ? pendingPage!.height : document.height} name={cachedPreview ? pendingPage!.name : document.sourceName} bubbles={cachedPreview ? (cachedPreview.bubbles ?? []) : document.bubbles.filter(bubble=>!bubble.excluded)} textRegions={cachedPreview ? cachedPreview.textRegions ?? [] : document.textRegions} selected={cachedPreview ? emptySelection : selected} selectedTextId={cachedPreview ? null : activeTextId} tool={pendingPageId ? 'select' : tool} brushRadius={brushRadius} showBoxes={showBoxes} showMask={!cachedPreview && showMask} showOriginal={showOriginal} showWorking={showWorking} onBubble={selectFromScript} onRect={rect => { setManualRect(rect); if (tool === 'text') createDialogue(rect); }} onBrush={editMask} onText={selectTextRegion} /> : <div className="empty-workspace"><div className="empty-content"><div className="empty-icon"><MangaCleanLogo size={32} /></div><h1>Open a page to get started</h1><p>Press Ctrl+O, or choose a chapter folder.</p><div className="empty-actions"><button className="text-command primary large" onClick={choose}><FolderOpen size={18} /> Open Image or Project</button><button className="text-command large" onClick={chooseFolder}>Open Chapter Folder</button></div><span className="empty-hint">PNG, JPEG, or .mangaclean · Processing stays on this computer</span></div></div>}
+        {document ? <CanvasWorkspace bubbleStatuses={bubbleStatuses} detectionMode={detectionMode} showRulers={showRulers} activeLayer={cachedPreview ? null : activeLayer} typography={{ session: typography, dialogues: cachedPreview ? [] : document.dialogues ?? [], selected: selectedDialogueId, visible: !cachedPreview && showTypography, coverText: composition.text_mode === 'overlay', onSelect: selectDialogue, onEdit: selectDialogue }} interaction={interaction} editable={Boolean(api) && !pendingPageId && !busy && !running && !textEditor} showRegions={showRegions} showSelection={!cachedPreview && showSelection} onEditText={editTextRegion} onDeselect={() => { setActiveLayer(null);setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); }} onCommitBubble={commitBubbleRect} onCommitRegion={commitRegionRect} onGesture={value => { setRegionGesture(value); if (value) { setSaveNotice(''); setPreview(null); setMaskUrl(null); } }} controller={viewport} original={cachedPreview?.original ?? original} working={cachedPreview?.working ?? working} containers={containers} mask={cachedPreview ? null : mask} width={cachedPreview ? pendingPage!.width : document.width} height={cachedPreview ? pendingPage!.height : document.height} name={cachedPreview ? pendingPage!.name : document.sourceName} bubbles={cachedPreview ? (cachedPreview.bubbles ?? []) : document.bubbles.filter(bubble=>!bubble.excluded)} textRegions={cachedPreview ? cachedPreview.textRegions ?? [] : document.textRegions} selected={cachedPreview ? emptySelection : selected} selectedTextId={cachedPreview ? null : activeTextId} tool={pendingPageId ? 'select' : tool} brushRadius={brushRadius} showBoxes={showBoxes} showMask={!cachedPreview && showMask} showOriginal={showOriginal} showWorking={showWorking} layerOpacity={layerOpacity} eyedropperActive={eyedropperActive} pureColor={pureColor} onBrushRadiusChange={setBrushRadius} onSampleColor={rgb => { setPureColor(rgb); setEyedropperActive(false); setHealingMode('pure-paint'); setTool('heal-pure'); }} onBubble={selectFromScript} onRect={handleRectComplete} onBrush={editMask} onText={selectTextRegion} /> : <div className="empty-workspace"><div className="empty-content"><div className="empty-icon"><MangaCleanLogo size={32} /></div><h1>Open a page to get started</h1><p>Press Ctrl+O, or choose a chapter folder.</p><div className="empty-actions"><button className="text-command primary large" onClick={choose}><FolderOpen size={18} /> Open Image or Project</button><button className="text-command large" onClick={chooseFolder}>Open Chapter Folder</button></div><span className="empty-hint">PNG, JPEG, or .mangaclean · Processing stays on this computer</span></div></div>}
       </div>
-      {document && !rightCollapsed && <div className="right-dock-container" inert={Boolean(pendingPageId)} style={{ width: rightWidth }}><InspectorDock cardTypography={bubble => <TypographyCardControls session={typography} dialogues={document?.dialogues ?? []} bubbleId={bubble.id} selected={selectedDialogueId} disabled={!api || !document || busy || running || regionGesture || Boolean(textEditor)} onTarget={id => { setSelectedDialogueId(id); typography.select(id); setActiveTextId(null); }} />} document={document} selected={selected} onSelect={selectFromScript} tab={dockTab} onTab={setDockTab} onCollapse={() => setRightCollapsed(true)} layerControls={<>
-        <label className="layer-control"><input type="checkbox" checked={showOriginal} onChange={event => setShowOriginal(event.target.checked)} />Raw Artwork<span>Original preview</span></label>
-        <label className="layer-control"><input type="checkbox" checked={showWorking} onChange={event => setShowWorking(event.target.checked)} />Cleaned / Working<span>Editing preview</span></label>
-        <label className="layer-control">Artwork in Editing and export<select aria-label="Artwork source" value={composition.artwork ?? 'working'} disabled={!api || busy || running || regionGesture} onChange={event => changeComposition({ artwork: event.target.value as PageComposition['artwork'] })}><option value="working">{composition.text_mode === 'overlay' ? 'Original (overlay base)' : 'Cleaned / Working'}</option><option value="original">Raw artwork</option><option value="hidden">Hidden (white background)</option></select></label>
-        <label className="layer-control"><input type="checkbox" checked={Boolean(composition.artwork_locked)} disabled={!api || busy || running || regionGesture} onChange={event => changeComposition({ artwork_locked: event.target.checked })} />Lock working artwork</label>
-        <label className="layer-control"><input type="checkbox" checked={showTypography} onChange={event => setShowTypography(event.target.checked)} />Typography overlay<span>Workspace preview</span></label>
-        <TypographyLayerList session={typography} dialogues={document?.dialogues ?? []} selected={selectedDialogueId} onSelect={selectDialogue} onLayer={changeLayer} disabled={!api || busy || running || regionGesture} />
-        <label className="layer-control"><input type="checkbox" checked={showRegions} onChange={event => setShowRegions(event.target.checked)} />TextRegion geometry</label>
-        <label className="layer-control"><input type="checkbox" checked={showSelection} onChange={event => setShowSelection(event.target.checked)} />Selection handles</label>
-        <label className="layer-control"><input type="checkbox" checked={showBoxes} onChange={event => setShowBoxes(event.target.checked)} />Candidate overlays</label>
-        <label className="layer-control"><input type="checkbox" checked={showMask} disabled={!maskUrl} onChange={event => setShowMask(event.target.checked)} />Cleaning preview mask</label>
-      </>} healingControls={<section className="selection-properties" aria-label="Healing controls">
-        <h2>Healing</h2>
-        <p>Select one bubble or draw a repair area on the Editing canvas. Then paint the pixels to repair.</p>
-        <button disabled={!api || busy || jobActive} onClick={() => { resetSelection(); activateTool('manual'); setDockTab('Healing'); }}>Draw healing area</button>
-        <button disabled={!canStartHealing} onClick={prepareHealing}>Start empty mask</button>
-        {manualRect && <p>{manualRect[2]} × {manualRect[3]} px repair area</p>}
-        <label>Healing brush radius · {brushRadius} px<input type="range" min="1" max="40" value={brushRadius} disabled={busy || running} onChange={event => setBrushRadius(Number(event.target.value))} /></label>
-        {preview && <>
-          <p role="status">{preview.maskPixels.toLocaleString()} mask pixels</p>
-          <button aria-pressed={tool === 'mask-add'} disabled={busy || running} onClick={() => activateTool('mask-add')}>Add to mask</button>
-          <button aria-pressed={tool === 'mask-erase'} disabled={busy || running} onClick={() => activateTool('mask-erase')}>Erase from mask</button>
-          <label>Method<select value={method} onChange={event => setMethod(event.target.value)}><option>Auto / Recommended</option><option>Telea Inpainting</option><option>White Bubble Clean</option></select></label>
-          <button disabled={!canClean} onClick={clean}>Apply healing</button>
-          <button disabled={busy || running} onClick={() => { setPreview(null); setMaskUrl(null); setTool(manualRect ? 'manual' : 'select'); }}>Discard mask</button>
-        </>}
-      </section>} imageControls={<ImageAdjustments key={document.pageId} settings={composition} disabled={!api || busy || running || regionGesture || Boolean(composition.artwork_locked)} onChange={changeComposition} />}>
+      {document && !rightCollapsed && <div className="right-dock-container" inert={Boolean(pendingPageId)} style={{ width: rightWidth }}><InspectorDock cardTypography={bubble => <TypographyCardControls session={typography} dialogues={document?.dialogues ?? []} bubbleId={bubble.id} selected={selectedDialogueId} disabled={!api || !document || busy || running || regionGesture || Boolean(textEditor)} onTarget={id => { setSelectedDialogueId(id); typography.select(id); setActiveTextId(null); }} />} document={document} selected={selected} onSelect={selectFromScript} tab={dockTab} onTab={setDockTab} onCollapse={() => setRightCollapsed(true)} layerControls={<LayersPanel
+        composition={composition}
+        showOriginal={showOriginal}
+        onShowOriginal={setShowOriginal}
+        showWorking={showWorking}
+        onShowWorking={setShowWorking}
+        showTypography={showTypography}
+        onShowTypography={setShowTypography}
+        showRegions={showRegions}
+        onShowRegions={setShowRegions}
+        showSelection={showSelection}
+        onShowSelection={setShowSelection}
+        showBoxes={showBoxes}
+        onShowBoxes={setShowBoxes}
+        showMask={showMask}
+        onShowMask={setShowMask}
+        hasMask={Boolean(maskUrl)}
+        opacity={layerOpacity}
+        onOpacityChange={(layer, value) => setLayerOpacity(prev => ({ ...prev, [layer]: value }))}
+        onChangeComposition={changeComposition}
+        viewport={viewport}
+        disabled={!api || busy || running || regionGesture}
+        typographyLayerList={<TypographyLayerList session={typography} dialogues={document?.dialogues ?? []} selected={selectedDialogueId} onSelect={selectDialogue} onLayer={changeLayer} disabled={!api || busy || running || regionGesture} />}
+      />} healingControls={<HealingPanel
+        mode={healingMode}
+        onSelectMode={selectHealingMode}
+        brushRadius={brushRadius}
+        onBrushRadiusChange={setBrushRadius}
+        dilation={healingDilation}
+        onDilationChange={setHealingDilation}
+        contextPadding={healingContextPadding}
+        onContextPaddingChange={setHealingContextPadding}
+        method={method}
+        onMethodChange={setMethod}
+        autoHealOnRelease={autoHealOnRelease}
+        onAutoHealChange={setAutoHealOnRelease}
+        pureColor={pureColor}
+        onPureColorChange={setPureColor}
+        eyedropperActive={eyedropperActive}
+        onToggleEyedropper={() => setEyedropperActive(prev => !prev)}
+        hasPreview={Boolean(preview)}
+        maskPixels={preview?.maskPixels ?? 0}
+        manualRect={manualRect}
+        canStartHealing={canStartHealing}
+        canClean={canClean}
+        canUndo={Boolean(document.canUndo)}
+        busy={busy || running}
+        artworkLocked={Boolean(composition.artwork_locked)}
+        onStartEmptyMask={prepareHealing}
+        onApplyRepair={clean}
+        onDiscardMask={() => { setPreview(null); setMaskUrl(null); setShowMask(false); setTool(manualRect ? 'manual' : 'select'); }}
+        onUndo={undo}
+        patches={healingPatches[document.pageId] ?? []}
+        viewport={viewport}
+      />} imageControls={<ImageAdjustments key={document.pageId} settings={composition} disabled={!api || busy || running || regionGesture || Boolean(composition.artwork_locked)} onChange={changeComposition} />}>
         <section className="selection-properties" aria-label="Selected object properties">
           {active || activeText || activeDialogue || manualRect ? <>
             <div className="selection-title">
@@ -1014,7 +1213,29 @@ export default function App() {
     )}
     {operationMessage && <div className="operation-overlay"><div className="operation-card"><div className="operation-spinner" role="progressbar" /><p role="status">{operationMessage}</p><progress aria-label="Operation progress" max={1} value={activeJob && typeof activeJob.progress === 'number' && activeJob.progress > 0 ? Math.min(1, activeJob.progress) : operationProgress} />{activeJob && <button disabled={activeJob.cancelRequested} onClick={() => { if (api) void api.post(`/v1/jobs/${activeJob.id}/cancel`).catch(reportError); }}>{activeJob.cancelRequested ? 'Cancelling…' : 'Cancel'}</button>}</div></div>}
     {textEditor && <SourceTextDialog session={textEditor} busy={busy} error={textEditorError} onClose={() => { if (!busy) setTextEditor(null); }} onSave={value => void saveEditorText(value)} />}
-    {settings && <PreferencesDialog api={api} needsGeminiKey={settings === 'gemini-key'} onClose={() => setSettings(false)} density={density} onDensity={setDensity} exportFormat={exportFormat} onExportFormat={setExportFormat} provider={provider} onProvider={setProvider} detectionMode={detectionMode} onDetectionMode={mode => { setDetectionMode(mode); setShowBoxes(true); resetSelection(); if (tool.startsWith('mask-')) setTool('select'); }} textMode={composition.text_mode ?? 'clean'} onTextMode={document && api ? mode => changeComposition({text_mode:mode}) : undefined} includeFreeText={includeFreeText} onIncludeFreeText={setIncludeFreeText} busy={busy || jobActive || regionGesture || Boolean(textEditor)} onReset={() => { setDensity('Balanced'); setLeftCollapsed(window.innerWidth < 1120); setRightCollapsed(false); setLeftWidth(220); setRightWidth(300); viewport.reset(); }} />}
-    {exportOpen && document && <QuickExportDialog chapterCount={state.chapter?.pages.length} onExportPages={exportPages} typographyNotice={<TypographyExportNotice session={typography} count={document.dialogues?.filter(text => text.visible).length ?? 0} />} onClose={() => setExportOpen(false)} width={document.width} height={document.height} busy={busy || running} onExport={kind => { setExportFormat(kind); setExportOpen(false); download(kind); }} />}
+    {settings && <PreferencesDialog api={api} needsGeminiKey={settings === 'gemini-key'} onClose={() => setSettings(false)} density={density} onDensity={setDensity} exportFormat={exportFormat} onExportFormat={setExportFormat} provider={provider} onProvider={setProvider} detectionMode={detectionMode} onDetectionMode={mode => { setDetectionMode(mode); setShowBoxes(true); resetSelection(); if (tool.startsWith('mask-')) setTool('select'); }} textMode={composition.text_mode ?? 'clean'} onTextMode={document && api ? mode => changeComposition({text_mode:mode}) : undefined} includeFreeText={includeFreeText} onIncludeFreeText={setIncludeFreeText} busy={busy || jobActive || regionGesture || Boolean(textEditor)} onAtelierSettingsApplied={nextSettings => { setHealingDilation(nextSettings.inpainting.autoDilation); if (nextSettings.inpainting.defaultEngine === 'opencv') setMethod('Telea Inpainting'); else setMethod('Auto / Recommended'); }} onReset={() => { setDensity('Balanced'); setLeftCollapsed(window.innerWidth < 1120); setRightCollapsed(false); setLeftWidth(220); setRightWidth(300); viewport.reset(); }} />}
+    {exportOpen && document && api && (() => {
+      const activeProjectRecord = activeProjectId ? loadRecentProjects().find(p => p.id === activeProjectId) : undefined;
+      const chapterPages = (state.chapter?.pages ?? [{ id: document.pageId, name: document.sourceName }]).map(p => ({ id: p.id, name: p.name }));
+      const approvedPageIds = Object.entries(approvedMap)
+        .filter(([, set]) => set && set.size > 0)
+        .map(([pageId]) => pageId);
+      return (
+        <ExportStudioModal
+          api={api}
+          document={document}
+          chapterPages={chapterPages}
+          approvedPageIds={approvedPageIds}
+          projectMeta={activeProjectRecord ? {
+            seriesTitle: activeProjectRecord.seriesTitle,
+            chapterNumber: String(activeProjectRecord.chapterNumber),
+            languagePair: `${activeProjectRecord.sourceLang} → ${activeProjectRecord.targetLang}`,
+            coverImage: activeProjectRecord.coverImage,
+          } : undefined}
+          onClose={() => setExportOpen(false)}
+          onSuccessNotice={notice => setSaveNotice(notice)}
+        />
+      );
+    })()}
   </div></TooltipProvider>;
 }

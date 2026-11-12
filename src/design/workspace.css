@@ -2,12 +2,15 @@
 :root { --studio-header-height:44px; --studio-inspector-width:320px; }
 body {min-width:720px;background:var(--studio-primary);color:var(--studio-text)}
 .app {font-size:13px;min-height:480px}
-button,input,select,textarea {font:inherit}
-button,select,input,textarea {border:1px solid var(--studio-border);border-radius:4px;color:var(--studio-text);background:var(--studio-elevated)}
-button {min-height:30px;padding:4px 8px}
-button:hover:not(:disabled) {background:var(--studio-hover)}
-button:active:not(:disabled) {background:var(--studio-elevated)}
-button:disabled {color:var(--studio-line);cursor:not-allowed;opacity:.7}
+@layer base {
+  button,input,select,textarea {font:inherit}
+  button,select,input,textarea {border:1px solid var(--studio-border);border-radius:4px;color:var(--studio-text);background:var(--studio-elevated)}
+  button {min-height:30px;padding:4px 8px}
+  .atelier-settings-modal button {min-height:0}
+  button:hover:not(:disabled) {background:var(--studio-hover)}
+  button:active:not(:disabled) {background:var(--studio-elevated)}
+  button:disabled {color:var(--studio-line);cursor:not-allowed;opacity:.7}
+}
 button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,[tabindex]:focus-visible {outline:2px solid var(--studio-accent);outline-offset:2px}
 ::selection {background:var(--studio-tint);color:var(--studio-text)}
 * {scrollbar-color:var(--studio-line) var(--studio-panel);scrollbar-width:thin;caret-color:var(--studio-accent-ink)}
