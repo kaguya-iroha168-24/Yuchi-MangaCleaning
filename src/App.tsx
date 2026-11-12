@@ -410,8 +410,11 @@ export default function App() {
   const scan = (scope = detectAll ? 'all' : 'current') => { if (canScan && api) void action(async () => { await flushEdits(); setPreview(null);setMaskUrl(null);
     if (detectionMode === 'bubble') frames.clearCache();
     const ids = processingPageIds(scope,state.chapter,queuedPages);
-    const count = ids.length;
-    const initialLabel = detectionMode === 'text' ? `Detecting text (1/${count})…` : `Detecting bubbles (1/${count})…`;
+    const pageIds = ids.length ? ids : (document?.pageId ? [document.pageId] : []);
+    const count = pageIds.length || 1;
+    const initialLabel = count === 1
+      ? (detectionMode === 'text' ? 'Detecting text…' : 'Detecting bubbles…')
+      : (detectionMode === 'text' ? `Detecting text (1/${count})…` : `Detecting bubbles (1/${count})…`);
     setOperation(initialLabel);
     setOperationProgress(0);
     const job = detectionMode === 'text' ? await api.post<Job>('/v1/detect-text', {ids, include_free_text: includeFreeText})
@@ -439,17 +442,19 @@ export default function App() {
     if (!api || !targetId || busy || jobActive) return;
     void action(async () => {
       await flushEdits();
-      setState(await api.post<State>(`/v1/text-regions/${encodeURIComponent(targetId)}/delete`));
+      const next = await api.post<State>(`/v1/text-regions/${encodeURIComponent(targetId)}/delete`);
       setActiveTextId(null);
       resetSelection();
+      await refresh(api, true, next, undefined, true);
     });
   };
   const deleteActiveBubble = () => {
     if (!api || !document || !active || busy || jobActive) return;
     void action(async () => {
       await flushEdits();
-      setState(await api.post<State>(`/v1/bubbles/${active.id}/delete`, { pageId: document.pageId }));
+      const next = await api.post<State>(`/v1/bubbles/${active.id}/delete`, { pageId: document.pageId });
       resetSelection();
+      await refresh(api, true, next, undefined, true);
     });
   };
   const addManualBubble = () => {

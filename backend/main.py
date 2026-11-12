@@ -523,10 +523,19 @@ def delete_bubble(identifier: str, payload: ActivePageRequest, request: Request)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         dialogues = [replace(text, bubble_id=None) if text.bubble_id == identifier else text for text in doc.dialogues]
-        store.capture(('bubbles', 'region_graph', 'dialogues'))
+        store.capture(('bubbles', 'region_graph', 'dialogues', 'working'))
         doc.bubbles = bubbles
         doc.region_graph = graph
         doc.dialogues = dialogues
+
+        # Restore original source artwork in this bubble rect
+        bx, by, bw, bh = bubble.rect
+        H, W = doc.working.shape[:2]
+        bx0, by0 = max(0, bx), max(0, by)
+        bx1, by1 = min(W, bx + bw), min(H, by + bh)
+        if bx1 > bx0 and by1 > by0:
+            doc.working[by0:by1, bx0:bx1] = doc.source[by0:by1, bx0:bx1].copy()
+
         doc.revision += 1
         doc.dirty = True
         store.preview = None
@@ -899,10 +908,20 @@ def delete_text_region(identifier: str, request: Request):
         target = next((tr for tr in doc.region_graph.text_regions if tr.id == identifier), None)
         if target is None:
             raise HTTPException(404, 'Text region not found.')
-        store.capture(('region_graph',))
+        store.capture(('region_graph', 'working'))
         graph = deepcopy(doc.region_graph)
         graph.remove(identifier)
         doc.region_graph = graph
+
+        # Restore original artwork in this text region from doc.source
+        x, y, w, h = target.rect
+        H, W = doc.working.shape[:2]
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(W, x + w), min(H, y + h)
+        if x1 > x0 and y1 > y0:
+            doc.working[y0:y1, x0:x1] = doc.source[y0:y1, x0:x1].copy()
+            store.preview = None
+
         doc.revision += 1
         doc.dirty = True
         return public_state()

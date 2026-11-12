@@ -57,6 +57,11 @@ def register(namespace):
             failures.append(item)
             try:(m.CACHE/'last-scan-failure.json').write_text(json.dumps(dict(jobId=job,**item)),encoding='utf-8')
             except OSError:pass  # Diagnostic I/O must never replace the original failure.
+        cumulative_text_regions = 0
+        chapter = getattr(store, 'chapter', None)
+        total_bubbles_in_chapter = 0
+        if chapter:
+            total_bubbles_in_chapter = sum(p.get('bubbles', 0) for p in chapter.pages if p['id'] in ids)
         try:
             for page_number,page_id in enumerate(ids):
                 with store.lock:
@@ -65,99 +70,93 @@ def register(namespace):
                     check(job,page_id);doc=store.require()
                     page_slice = 1.0 / len(ids)
                     base_progress = page_number * page_slice
-                    store.job.update(stage='detect',currentPageId=page_id,editingAllowed=False,message=f'Processing page {page_number+1} of {len(ids)} - detecting (1/10)...',progress=base_progress + page_slice * 0.1)
+                    action_label = ('Detecting text' if len(ids) == 1 else f'Detecting text ({page_number+1}/{len(ids)})') if text_only else f'Detecting bubbles ({page_number+1}/{len(ids)})'
+                    store.job.update(stage='detect',currentPageId=page_id,editingAllowed=False,message=f'{action_label}…',progress=base_progress + page_slice * 0.1)
                     if text_only:
                         source, bubbles = doc.source, tuple(doc.bubbles)
                 if text_only:
-                    action_label = f'Detecting text ({page_number+1}/{len(ids)})'
                     try:
                         with store.lock:
                             check(job, page_id)
                             if store.job and store.job['id'] == job:
-                                store.job.update(message=f'{action_label} - detecting (2/10)...', progress=base_progress + page_slice * 0.2)
+                                store.job.update(message=f'{action_label}…', progress=base_progress + page_slice * 0.15)
                         candidates = list(locate_text(source, bubbles, include_free_text=getattr(payload, 'include_free_text', False)))
                         with store.lock:
                             check(job, page_id)
                             if store.job and store.job['id'] == job:
-                                store.job.update(message=f'{action_label} - detecting (4/10)...', progress=base_progress + page_slice * 0.4)
+                                store.job.update(message=f'{action_label}…', progress=base_progress + page_slice * 0.30)
                             doc = store.require()
                             graph = deepcopy(doc.region_graph)
                             count = merge_text_candidates(graph, candidates, doc.dialogues)
                             graph.validate(doc.source.shape, doc.bubbles)
-
-                            if store.job and store.job['id'] == job:
-                                store.job.update(message=f'{action_label} - detecting (5/10)...', progress=base_progress + page_slice * 0.5)
-
                             working_img = doc.working.copy()
-                            working_changed = False
-                            if not doc.composition.get('artwork_locked'):
-                                total_regions = len(graph.text_regions)
-                                for reg_idx, region in enumerate(graph.text_regions, 1):
-                                    check(job, page_id)
-                                    step_num = min(9, max(5, round(5 + 4 * (reg_idx / max(1, total_regions)))))
-                                    step_prog = base_progress + page_slice * (0.5 + 0.45 * (reg_idx / max(1, total_regions)))
+                            artwork_locked = doc.composition.get('artwork_locked')
+                            doc_bubbles = tuple(doc.bubbles)
+
+                        total_regions = len(graph.text_regions)
+                        if len(ids) == 1:
+                            init_msg = f'Detecting text (1/{max(1, total_regions)})…'
+                            with store.lock:
+                                if store.job and store.job['id'] == job:
+                                    store.job.update(message=init_msg, progress=0.30 if total_regions > 0 else 1.0)
+                        else:
+                            est_total = max(total_bubbles_in_chapter, cumulative_text_regions + total_regions + (len(ids) - page_number - 1) * max(1, total_regions))
+                            global_idx = cumulative_text_regions + 1
+                            global_total = max(global_idx, est_total)
+                            with store.lock:
+                                if store.job and store.job['id'] == job:
+                                    store.job.update(message=f'{action_label} · ({global_idx}/{global_total})…', progress=base_progress + page_slice * 0.30)
+
+                        working_changed = False
+                        if not artwork_locked and total_regions > 0:
+                            for reg_idx, region in enumerate(graph.text_regions, 1):
+                                check(job, page_id)
+                                if len(ids) == 1:
+                                    msg = f'Detecting text ({reg_idx}/{total_regions})…'
+                                    step_prog = 0.30 + 0.70 * (reg_idx / total_regions)
+                                else:
+                                    global_idx = cumulative_text_regions + reg_idx
+                                    global_total = max(global_idx, est_total)
+                                    msg = f'{action_label} · ({global_idx}/{global_total})…'
+                                    step_prog = base_progress + page_slice * (0.30 + 0.70 * (reg_idx / total_regions))
+
+                                with store.lock:
                                     if store.job and store.job['id'] == job:
-                                        store.job.update(message=f'{action_label} - detecting ({step_num}/10)...', progress=step_prog)
+                                        store.job.update(message=msg, progress=step_prog)
 
-                                    rect = tuple(region.rect)
-                                    linked_bubble = None
-                                    if region.bubble_id:
-                                        b = next((b for b in doc.bubbles if b.id == region.bubble_id), None)
-                                        if b is not None:
-                                            bx, by, bw, bh = b.rect
-                                            rx, ry, rw, rh = rect
-                                            if rx >= bx and ry >= by and rx + rw <= bx + bw and ry + rh <= by + bh:
-                                                linked_bubble = b
+                                rect = tuple(region.rect)
+                                linked_bubble = None
+                                if region.bubble_id:
+                                    b = next((b for b in doc_bubbles if b.id == region.bubble_id), None)
+                                    if b is not None:
+                                        bx, by, bw, bh = b.rect
+                                        rx, ry, rw, rh = rect
+                                        if (rx + rw > bx and rx < bx + bw and ry + rh > by and ry < by + bh):
+                                            linked_bubble = b
 
-                                    if linked_bubble is None:
-                                        texture_block = synthesize_texture_block(working_img, rect)
-                                        if texture_block is not None:
-                                            rx, ry, rw, rh = rect
-                                            working_img[ry:ry+rh, rx:rx+rw] = texture_block
+                                if linked_bubble is None:
+                                    texture_block = synthesize_texture_block(working_img, rect)
+                                    if texture_block is not None:
+                                        rx, ry, rw, rh = rect
+                                        working_img[ry:ry+rh, rx:rx+rw] = texture_block
+                                        working_changed = True
+                                        continue
+
+                                try:
+                                    mask, interior = prepare_text_selection(working_img, rect, bubble=linked_bubble)
+                                    if cv2.countNonZero(mask) > 0:
+                                        if linked_bubble is not None:
+                                            working_img[mask > 0] = 255
                                             working_changed = True
-                                            continue
-
-                                    try:
-                                        mask, interior = prepare_text_selection(working_img, rect, bubble=linked_bubble)
-                                        if cv2.countNonZero(mask) > 0:
-                                            clean_method = WHITE if linked_bubble is not None else NS
-                                            clean_radius = 3.0 if linked_bubble is not None else 4.5
-                                            res = restore_text(working_img, mask, method=clean_method, radius=clean_radius, interior=interior if linked_bubble is not None else None)
+                                        else:
+                                            res = restore_text(working_img, mask, method=NS, radius=3.0, interior=interior)
                                             if res.changed_pixels > 0:
                                                 working_img = res.image
                                                 working_changed = True
-                                    except Exception:
-                                        try:
-                                            x, y, w, h = rect
-                                            H, W = working_img.shape[:2]
-                                            pad = 12 if linked_bubble is None else 2
-                                            x0, y0 = max(0, x - pad), max(0, y - pad)
-                                            x1, y1 = min(W, x + w + pad), min(H, y + h + pad)
-                                            roi = working_img[y0:y1, x0:x1]
-                                            if roi.size > 0:
-                                                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                                                otsu_val, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-                                                thresh = min(205, max(30, int(otsu_val)))
-                                                ink = cv2.inRange(gray, 0, thresh)
-                                                if cv2.countNonZero(ink) > 0:
-                                                    k_size = (7, 7) if linked_bubble is None else (3, 3)
-                                                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, k_size)
-                                                    dilated = cv2.dilate(ink, kernel)
-                                                    fallback_mask = np.zeros(working_img.shape[:2], dtype=np.uint8)
-                                                    fallback_mask[y0:y1, x0:x1] = dilated
-                                                    fallback_interior = np.zeros_like(fallback_mask)
-                                                    fallback_interior[y0+1:y1-1, x0+1:x1-1] = 255
-                                                    fallback_mask &= fallback_interior
-                                                    if cv2.countNonZero(fallback_mask) > 0:
-                                                        clean_method = WHITE if linked_bubble is not None else NS
-                                                        clean_radius = 3.0 if linked_bubble is not None else 4.5
-                                                        res = restore_text(working_img, fallback_mask, method=clean_method, radius=clean_radius, interior=fallback_interior if linked_bubble is not None else None)
-                                                        if res.changed_pixels > 0:
-                                                            working_img = res.image
-                                                            working_changed = True
-                                        except Exception:
-                                            pass
+                                except Exception:
+                                    pass
 
+                        with store.lock:
                             graph_changed = (graph != doc.region_graph)
                             if working_changed or graph_changed:
                                 keys_to_capture = []
@@ -175,7 +174,12 @@ def register(namespace):
                                 store.preview = None
 
                             if store.job and store.job['id'] == job:
-                                store.job.update(message=f'{action_label} (10/10)', progress=base_progress + page_slice * 1.0)
+                                if len(ids) == 1:
+                                    final_msg = f'Detecting text ({total_regions}/{total_regions})…' if total_regions > 0 else 'Detecting text…'
+                                    store.job.update(message=final_msg, progress=1.0)
+                                else:
+                                    cumulative_text_regions += total_regions
+                                    store.job.update(message=f'{action_label} · ({cumulative_text_regions}/{max(cumulative_text_regions, est_total)})…', progress=base_progress + page_slice * 1.0)
                             text_regions += count
                             processed += 1
                     except (m.OCRCancelled, m.DetectionCancelled):
@@ -199,14 +203,13 @@ def register(namespace):
                     action_label = f'Detecting bubbles ({page_number+1}/{len(ids)})'
                     if needs_detection:
                         with store.lock:
-                            if store.job and store.job['id'] == job: store.job.update(message=f'{action_label} - detecting (2/10)...',progress=base_progress + page_slice * 0.2)
+                            if store.job and store.job['id'] == job: store.job.update(message=f'{action_label}…',progress=base_progress + page_slice * 0.15)
                         def on_detect_progress(subprogress, text=None):
                             with store.lock:
                                 if store.job and store.job['id'] == job:
                                     val = float(subprogress) if isinstance(subprogress, (int, float)) else 0.5
-                                    frac = 0.2 + 0.75 * max(0.0, min(1.0, val))
-                                    step_num = min(9, max(2, round(frac * 10)))
-                                    store.job.update(message=f'{action_label} - detecting ({step_num}/10)...', progress=base_progress + page_slice * frac)
+                                    frac = 0.15 + 0.80 * max(0.0, min(1.0, val))
+                                    store.job.update(message=f'{action_label}…', progress=base_progress + page_slice * frac)
                         batch = namespace['detect_with_fallback'](payload.provider, source, working, payload.device, store.cancel, None, None, None, on_detect_progress)
                         with store.lock:
                             check(job,page_id);doc=store.require();store.capture()
@@ -215,7 +218,7 @@ def register(namespace):
                             doc.detection_runs.append(batch.metadata);doc.revision+=1;doc.dirty=True;store.preview=None;detected+=1
                     else:reused+=1
                     with store.lock:
-                        if store.job and store.job['id'] == job: store.job.update(message=f'{action_label} (10/10)',progress=base_progress + page_slice * 1.0)
+                        if store.job and store.job['id'] == job: store.job.update(message=f'{action_label}…',progress=base_progress + page_slice * 1.0)
                     with store.lock:
                         check(job,page_id);doc=store.require();graph=deepcopy(doc.region_graph)
                         for bubble in doc.bubbles:

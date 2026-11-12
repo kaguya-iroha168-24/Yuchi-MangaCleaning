@@ -130,49 +130,24 @@ def boundary_ink_mask(gray, safe, padding=2):
     return dilate_mask(protected[labels], max(2, padding))
 
 
-def prepare_text_selection(image, rect, bubble=None, padding=3):
+def prepare_text_selection(image, rect, bubble=None, padding=2):
     x, y, w, h = selection_rect(image, rect)
     H, W = image.shape[:2]
-    pad_x = 12 if bubble is None else padding
-    pad_top = 14 if bubble is None else padding
-    pad_bottom = 14 if bubble is None else padding
-    x0 = max(0, x - pad_x)
-    y0 = max(0, y - pad_top)
-    x1 = min(W, x + w + pad_x)
-    y1 = min(H, y + h + pad_bottom)
+    pad = max(1, min(3, padding))
+    x0 = max(0, x - pad)
+    y0 = max(0, y - pad)
+    x1 = min(W, x + w + pad)
+    y1 = min(H, y + h + pad)
     rw, rh = x1 - x0, y1 - y0
 
     roi = image[y0:y1, x0:x1]
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     is_light = float(np.mean(gray >= 205)) >= 0.70
 
-    glyphs = None
-    if is_light:
-        try:
-            glyphs = selection_mask(roi, (0, 0, rw, rh), padding=0).mask
-        except ValueError:
-            glyphs = None
-
-    threshold = 205
-    if glyphs is None or not np.any(glyphs):
-        otsu_val, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-        threshold = min(205, max(30, int(otsu_val)))
-        ink = cv2.inRange(gray, 0, threshold)
-        count, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
-        keep = np.zeros(count, np.uint8)
-        for k in range(1, count):
-            cx, cy, cw, ch, area = map(int, stats[k])
-            if (cx <= 0 and x0 == 0) or (cy <= 0 and y0 == 0) or (cx+cw >= rw and x1 == W) or (cy+ch >= rh and y1 == H):
-                continue
-            if area < 2 or area > .85*rw*rh:
-                continue
-            keep[k] = 255
-        glyphs = keep[labels]
-
     safe = np.full_like(gray, 255)
+    safe[[0, -1], :] = 0
+    safe[:, [0, -1]] = 0
     if bubble is not None:
-        safe[[0, -1], :] = 0
-        safe[:, [0, -1]] = 0
         bx, by, bw, bh = bubble.rect
         if x < bx or y < by or x+w > bx+bw or y+h > by+bh:
             raise ValueError('Keep the linked text box inside its bubble before cleaning.')
@@ -189,35 +164,38 @@ def prepare_text_selection(image, rect, bubble=None, padding=3):
 
     # Use complete ink components before clipping, so an outline that crosses
     # the box or bubble interior is never treated as a detached glyph.
-    ink_limit = 205 if is_light else threshold
+    ink_limit = 205 if is_light else 190
     ink = cv2.inRange(gray, 0, ink_limit)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(ink)
+    if count <= 1:
+        raise ValueError('No text ink detected in this region.')
+
     protected = np.zeros(count, np.uint8)
-    if bubble is not None:
-        protected[np.unique(labels[safe == 0])] = 255
+    protected[np.unique(labels[safe == 0])] = 255
     protected[0] = 0
-    area_limit = .85*rw*rh if bubble is None else .24*rw*rh
+    area_limit = .25*rw*rh
     for k, (_, _, cw, ch, area) in enumerate(stats[1:], 1):
-        if (cw >= .95*rw or ch >= .95*rh or area > area_limit
-                or (ch <= 6 and cw >= .60*rw and cw >= 8*ch)
-                or (cw <= 6 and ch >= .60*rh and ch >= 8*cw)):
+        if (cw >= .80*rw or ch >= .80*rh or area > area_limit
+                or (cw >= .45*rw and cw >= 6*ch)
+                or (ch >= .45*rh and ch >= 6*cw)):
             protected[k] = 255
     safe &= cv2.bitwise_not(dilate_mask(protected[labels], 2))
-    if bubble is None:
-        rx0, ry0 = x - x0, y - y0
-        rx1, ry1 = rx0 + w, ry0 + h
-        text_ink = np.zeros_like(ink)
-        text_ink[ry0:ry1, rx0:rx1] = ink[ry0:ry1, rx0:rx1]
-        glyphs = text_ink
-    glyphs &= safe
+
+    rx0, ry0 = x - x0, y - y0
+    rx1, ry1 = rx0 + w, ry0 + h
+    text_ink = np.zeros_like(ink)
+    text_ink[ry0:ry1, rx0:rx1] = ink[ry0:ry1, rx0:rx1]
+    glyphs = text_ink & safe
+
     _, _, candidates, _ = cv2.connectedComponentsWithStats(glyphs)
     areas = candidates[1:, 4]
     if len(areas) > 40 and np.std(areas)/max(1, np.mean(areas)) < .2:
         raise ValueError('Repeated fine marks may be artwork or screentone. No artwork was changed.')
-    dilation_radius = 3 if bubble is None else 2
-    local = dilate_mask(glyphs, dilation_radius) & safe
-    if not np.any(local) or np.count_nonzero(local) > .85*rw*rh:
+
+    local = dilate_mask(glyphs, 2) & safe
+    if not np.any(local) or np.count_nonzero(local) > .55*rw*rh:
         raise ValueError('No reliable text mask in this box. Adjust the selection and try again.')
+
     mask = np.zeros(image.shape[:2], np.uint8)
     interior = np.zeros_like(mask)
     mask[y0:y1, x0:x1] = local
