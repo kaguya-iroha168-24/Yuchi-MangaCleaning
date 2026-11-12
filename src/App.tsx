@@ -8,6 +8,8 @@ import { CircleHelp, Eye, FolderOpen, Layers3, Trash2, X } from 'lucide-react';
 import { MangaCleanLogo } from './components/MangaCleanIcons';
 import { Api, ApiError, type DetectionMode, type ExportPreflight, type Job, type LayerPatch, type PageComposition, type Preview, type State, type TextRegion, connect } from './api';
 import { ChapterNavigator } from './components/ChapterNavigator';
+import { AtelierHomeScreen } from './components/AtelierHomeScreen';
+import { addOrUpdateRecentProject, createThumbnailDataUrl } from './utils/recentProjectsStorage';
 import { ContextToolbar, DockResizeHandle, EngineStatusBar, FeatureBadge, InspectorDock, PageNavigator, StudioHeader, ToolRail, type DockTab } from './components/StudioShell';
 import { PreferencesDialog, QuickExportDialog, type TranslationSettings } from './components/PreferencesDialog';
 import { blocksStudioShortcuts, resolveStudioShortcut } from './ui/shortcuts';
@@ -81,6 +83,7 @@ export default function App() {
   const navigation = useMemo(() => new PageNavigation(), []);
   const [pageFrame, setPageFrame] = useState<PageFrame | null>(null);
   const [pendingPageId, setPendingPageId] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<'home' | 'workspace'>('home');
   const originalUrl = pageFrame?.originalUrl ?? null;
 
   const [brushRadius, setBrushRadius] = useState(5);
@@ -305,6 +308,18 @@ export default function App() {
         }
         return;
       }
+      if (event.key === 'Escape' && !settings && !exportOpen && !textEditor && !regionGesture) {
+        if (activeView === 'home' && document) {
+          event.preventDefault();
+          setActiveView('workspace');
+          return;
+        }
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        chooseFolder();
+        return;
+      }
       const shortcut = resolveStudioShortcut(event);
       if (!shortcut) return;
       if (event.ctrlKey || event.metaKey) event.preventDefault();
@@ -375,12 +390,46 @@ export default function App() {
         next = lastState!;
       }
       frames.clearCache();
+      // Auto-detect project metadata & thumbnail for real persistent card history
+      try {
+        const sortedFiles = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+        const firstFile = sortedFiles[0];
+        const relPath = (firstFile as any)?.webkitRelativePath || '';
+        const folderName = relPath.includes('/') ? relPath.split('/')[0] : '';
+        const seriesTitle = folderName || firstFile.name.replace(/\.[^/.]+$/, '');
+        let chapterNumber = 1;
+        const numMatch = seriesTitle.match(/(?:ch(?:apter)?|c|#)\s*[-_.]?\s*(\d+)/i) || seriesTitle.match(/(\d+)/);
+        if (numMatch) {
+          chapterNumber = parseInt(numMatch[1], 10) || 1;
+        }
+        const rawFolderPath = (firstFile as any)?.path ? ((firstFile as any).path.replace(/\\/g, '/').split('/').slice(0, -1).join('/') || (firstFile as any).path) : '';
+        let coverImage: string | undefined = (firstFile as any)?.path;
+        if (!coverImage) {
+          coverImage = await createThumbnailDataUrl(firstFile);
+        }
+        addOrUpdateRecentProject({
+          seriesTitle,
+          chapterTitle: `Chapter ${chapterNumber}`,
+          chapterNumber,
+          folderPath: rawFolderPath,
+          coverImage,
+          pagesCount: files.length,
+          status: 'detected',
+          statusLabel: 'Detected / Pending Review',
+          sourceLang: 'JA',
+          targetLang: 'ID',
+          preset: 'Seinen High-Detail'
+        });
+      } catch {
+        // Fallback silently if metadata extraction fails
+      }
       await refresh(client, true, next, () => {
         resetSelection();
         setQueuedPages(new Set());
         if (!append) setDetectAll(false);
         setTool('select');
         viewport.reset();
+        setActiveView('workspace');
       });
     }, openingProject ? 'Opening project…' : `Importing images (1/${files.length})…`);
   };
@@ -757,7 +806,51 @@ export default function App() {
   return <TooltipProvider delayDuration={350}><div className={`app density-${density.toLowerCase()}`}>
     <input ref={fileInput} className="visually-hidden" type="file" accept=".png,.jpg,.jpeg,.mangaclean" multiple onChange={event => { onFiles([...event.target.files ?? []]); event.target.value = ''; }} />
     <input ref={folderInput} className="visually-hidden" type="file" multiple {...{webkitdirectory:''}} onChange={event=>{const images=[...event.target.files ?? []].filter(file=>/\.(png|jpe?g)$/i.test(file.name)); if (images.length) onFiles(images); else setError('No PNG or JPEG images were found in that folder.'); event.target.value='';}} />
-    <StudioHeader processing={jobActive} document={displayDocument} busy={busy || running || regionGesture || Boolean(textEditor)}
+    {activeView === 'home' ? (
+      <AtelierHomeScreen
+        currentProject={displayDocument}
+        state={state}
+        connected={Boolean(api)}
+        api={api}
+        onOpenProject={choose}
+        onOpenFolder={chooseFolder}
+        onNewProject={(details) => {
+          addOrUpdateRecentProject({
+            seriesTitle: details.series,
+            chapterTitle: `Chapter ${details.chapter}`,
+            chapterNumber: parseInt(details.chapter, 10) || 1,
+            sourceLang: details.sourceLang,
+            targetLang: details.targetLang,
+            preset: details.preset,
+            coverImage: details.coverImage,
+            folderPath: '',
+            pagesCount: 0,
+            status: 'detected',
+            statusLabel: 'Initialized / Awaiting Folder'
+          });
+          setSaveNotice(`Project "${details.series} - Ch. ${details.chapter}" initialized (${details.preset}). Select chapter images.`);
+          chooseFolder();
+        }}
+        onResumeSession={() => setActiveView('workspace')}
+        onSelectProjectCard={(project) => {
+          if (document && (document.sourceName.includes(project.seriesTitle) || document.projectName?.includes(project.seriesTitle))) {
+            setActiveView('workspace');
+          } else {
+            setSaveNotice(`Opening ${project.seriesTitle} - Ch. ${project.chapterNumber}. Select chapter folder to load.`);
+            chooseFolder();
+          }
+        }}
+        onOpenSettings={() => setSettings(true)}
+        onDropFiles={onFiles}
+      />
+    ) : (
+      <>
+        <StudioHeader
+          onHome={() => setActiveView('home')}
+          isHome={false}
+          processing={jobActive}
+          document={displayDocument}
+          busy={busy || running || regionGesture || Boolean(textEditor)}
       tools={document && <ToolRail tool={tool} onTool={activateTool} ready={Boolean(api)} hasPreview={Boolean(preview && !preview.textRegionId)} busy={busy || running || regionGesture || Boolean(textEditor)} canPreview={canPreview} cleanHint={headerCleanHint} onPreview={preparePreview} onHealing={()=>{setDockTab('Healing');setRightCollapsed(false);}} />}
       onOpen={choose} onOpenFolder={chooseFolder} onSave={() => download('project')} onExport={() => setExportOpen(true)} onUndo={undo} onRedo={redo} onSettings={() => setSettings(true)}
       onTranslate={api && document && !pendingPageId ? translate : undefined} onProcess={()=>scan()}
@@ -852,8 +945,10 @@ export default function App() {
         </section>
       </InspectorDock><DockResizeHandle side="right" width={rightWidth} minimum={280} maximum={320} onResize={setRightWidth} /></div>}
     </main>
-    {operationMessage && <div className="operation-overlay"><div className="operation-card"><div className="operation-spinner" role="progressbar" /><p role="status">{operationMessage}</p><progress aria-label="Operation progress" max={1} value={activeJob && typeof activeJob.progress === 'number' && activeJob.progress > 0 ? Math.min(1, activeJob.progress) : operationProgress} />{activeJob && <button disabled={activeJob.cancelRequested} onClick={() => { if (api) void api.post(`/v1/jobs/${activeJob.id}/cancel`).catch(reportError); }}>{activeJob.cancelRequested ? 'Cancelling…' : 'Cancel'}</button>}</div></div>}
     <EngineStatusBar activeBubbleLabel={activeBubbleLabel} bubbleSummary={bubbleSummary} zoom={document && <ViewportZoomControls controller={viewport} />} connected={Boolean(api)} document={displayDocument} job={state.job} selected={selected.size} tool={tool} controller={viewport} onCancel={() => api && state.job && void action(async () => { await api.post(`/v1/jobs/${state.job!.id}/cancel`); })} />
+    </>
+    )}
+    {operationMessage && <div className="operation-overlay"><div className="operation-card"><div className="operation-spinner" role="progressbar" /><p role="status">{operationMessage}</p><progress aria-label="Operation progress" max={1} value={activeJob && typeof activeJob.progress === 'number' && activeJob.progress > 0 ? Math.min(1, activeJob.progress) : operationProgress} />{activeJob && <button disabled={activeJob.cancelRequested} onClick={() => { if (api) void api.post(`/v1/jobs/${activeJob.id}/cancel`).catch(reportError); }}>{activeJob.cancelRequested ? 'Cancelling…' : 'Cancel'}</button>}</div></div>}
     {textEditor && <SourceTextDialog session={textEditor} busy={busy} error={textEditorError} onClose={() => { if (!busy) setTextEditor(null); }} onSave={value => void saveEditorText(value)} />}
     {settings && <PreferencesDialog api={api} needsGeminiKey={settings === 'gemini-key'} onClose={() => setSettings(false)} density={density} onDensity={setDensity} exportFormat={exportFormat} onExportFormat={setExportFormat} provider={provider} onProvider={setProvider} detectionMode={detectionMode} onDetectionMode={mode => { setDetectionMode(mode); setShowBoxes(true); resetSelection(); if (tool.startsWith('mask-')) setTool('select'); }} textMode={composition.text_mode ?? 'clean'} onTextMode={document && api ? mode => changeComposition({text_mode:mode}) : undefined} includeFreeText={includeFreeText} onIncludeFreeText={setIncludeFreeText} busy={busy || jobActive || regionGesture || Boolean(textEditor)} onReset={() => { setDensity('Balanced'); setLeftCollapsed(window.innerWidth < 1120); setRightCollapsed(false); setLeftWidth(220); setRightWidth(300); viewport.reset(); }} />}
     {exportOpen && document && <QuickExportDialog chapterCount={state.chapter?.pages.length} onExportPages={exportPages} typographyNotice={<TypographyExportNotice session={typography} count={document.dialogues?.filter(text => text.visible).length ?? 0} />} onClose={() => setExportOpen(false)} width={document.width} height={document.height} busy={busy || running} onExport={kind => { setExportFormat(kind); setExportOpen(false); download(kind); }} />}

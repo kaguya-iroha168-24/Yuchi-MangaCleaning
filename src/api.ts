@@ -18,6 +18,44 @@ export type State = { schema: number; document: DocumentState | null; job: Job |
 export type Preview = { id: string; revision: number; maskPixels: number; analysis: Record<string, unknown>; bubbleId: string | null; textRegionId?: string | null };
 export type ChapterPage = { id: string; name: string; width: number; height: number; revision: number; dirty: boolean; saved?: boolean; bubbles: number; thumbnail: string };
 export type ChapterState = { id: string; activePageId: string; dirty: boolean; savedPath: string | null; pages: ChapterPage[] };
+
+export interface DeviceTelemetry {
+  manufacturer: string;
+  model: string;
+  displayName: string;
+}
+
+export interface GpuTelemetry {
+  name: string;
+  shortName: string;
+  driverVersion: string;
+  cudaVersion: string;
+  mode: string;
+  vramTotalGb: number;
+  vramUsedGb: number;
+  vramPercent: number;
+}
+
+export interface RamTelemetry {
+  totalGb: number;
+  usedGb: number;
+  percent: number;
+}
+
+export interface EngineTelemetry {
+  backend: 'ready' | 'loading' | 'standby' | 'offline';
+  yolo: 'ready' | 'loading' | 'standby' | 'offline';
+  ogkalu: 'ready' | 'loading' | 'standby' | 'offline';
+  inpainter: 'ready' | 'loading' | 'standby' | 'offline';
+}
+
+export interface SystemTelemetry {
+  device: DeviceTelemetry;
+  gpu: GpuTelemetry;
+  ram: RamTelemetry;
+  engines: EngineTelemetry;
+}
+
 type Session = { baseUrl: string; token: string };
 export type FontEntry = { family: string; weights: number[]; italicWeights?: number[]; status?: 'Available' | 'Missing' | 'Fallback'; sample?: string; preview?: string | null; warning?: string; license?: string };
 type FontCatalog = { fonts: FontEntry[] };
@@ -182,4 +220,41 @@ export class Api {
     open();
     return () => { stopped = true; clearTimeout(timer); socket.close(); };
   }
+
+  async getTelemetry(): Promise<SystemTelemetry> {
+    return this.get<SystemTelemetry>('/v1/system/telemetry');
+  }
+
+  async validatePaths(paths: string[]): Promise<Record<string, boolean>> {
+    const res = await this.post<{ results: Record<string, boolean> }>('/v1/system/validate_paths', { paths });
+    return res.results;
+  }
+
+  async revealPath(path: string): Promise<boolean> {
+    const res = await this.post<{ ok: boolean }>('/v1/system/reveal_path', { path });
+    return res.ok;
+  }
+}
+
+export async function fetchSystemTelemetry(api: Api | null): Promise<SystemTelemetry> {
+  if (api) {
+    try {
+      return await api.getTelemetry();
+    } catch {
+      // fallback
+    }
+  }
+  if ('__TAURI_INTERNALS__' in window) {
+    try {
+      return await invoke<SystemTelemetry>('get_system_telemetry');
+    } catch {
+      // fallback
+    }
+  }
+  return {
+    device: { manufacturer: 'PC Workstation', model: 'Desktop', displayName: 'Studio Workstation' },
+    gpu: { name: 'DirectML / CPU Mode', shortName: 'GPU', driverVersion: 'N/A', cudaVersion: 'N/A', mode: 'CPU Mode', vramTotalGb: 0, vramUsedGb: 0, vramPercent: 0 },
+    ram: { totalGb: 16.0, usedGb: 8.0, percent: 50 },
+    engines: { backend: 'offline', yolo: 'standby', ogkalu: 'standby', inpainter: 'ready' }
+  };
 }

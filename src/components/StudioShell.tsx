@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, FolderOpen, Hand, Languages, LoaderCircle, MousePointer2, Paintbrush, PanelLeftClose, PanelRightClose, Redo2, Save, Settings2, Type, Undo2, Upload } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FolderOpen, Hand, Home, Languages, LoaderCircle, MousePointer2, Paintbrush, PanelLeftClose, PanelRightClose, Redo2, Save, Settings2, Type, Undo2, Upload } from 'lucide-react';
 import type { Bubble, DocumentState, Job } from '../api';
 import { LoupePreview, MiniMap, ViewportReadout } from './CanvasWorkspace';
 import type { ViewportController } from '../ui/viewport';
@@ -28,13 +28,30 @@ export function StudioHeader(props: {
   onClean: () => void; canScan: boolean; canClean: boolean; cleanHint?: string;
   pages?: { number: number; previous?: () => void; next?: () => void };
   view?: ReactNode;
+  onHome?: () => void;
+  isHome?: boolean;
 }) {
   const file = props.document;
   const name = file?.projectName || file?.sourceName || 'Untitled workspace';
   const allPages = props.detectAll && props.pageCount > 1;
   const process = props.detectionMode === 'text' ? 'Detect Text Only' : props.overlayMode ? 'Detect Bubbles for Overlay' : 'Detect & Clean Bubbles';
   return <header className="studio-header">
-    <div className="studio-brand"><MangaCleanLogo size={20}/><div><strong>Yuchi Labs</strong><small>MangaClean Atelier</small></div></div>
+    <div className="studio-brand">
+      {props.onHome && (
+        <button
+          type="button"
+          onClick={props.onHome}
+          className={`chrome-button ${props.isHome ? 'active' : ''}`}
+          title="Home / Start Workspace"
+          aria-label="Home"
+          style={{ width: 28, height: 28, marginRight: 2 }}
+        >
+          <Home size={15} />
+        </button>
+      )}
+      <MangaCleanLogo size={20}/>
+      <div><strong>Yuchi Labs</strong><small>MangaClean Atelier</small></div>
+    </div>
     <div className="studio-project" title={name}><span>{name}</span></div>
     <div className="header-actions">
       <div className="header-import segmented-group" role="group" aria-label="Import">

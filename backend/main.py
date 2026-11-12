@@ -40,6 +40,7 @@ from mangaclean.services.ocr import OCRCancelled, close_ocr, crop_region, ocr_co
 from mangaclean.services.project_io import load_project, save_project
 from mangaclean.services.chapter import chapter_manifest
 from backend.chapter_routes import chapter_state, open_chapter, save_chapter
+from backend.system_telemetry import get_system_telemetry, validate_disk_paths, reveal_path_in_explorer
 from mangaclean.services.yuchi_process import close_detector, detection_config, warm_detector
 from mangaclean.services.typesetting import available_fonts, render_dialogue, composite_page, dialogue_cover_rect, page_artwork, clear_render_cache, close_typesetter, TypesettingUnavailable
 from mangaclean.services.export_preflight import dialogue_export_issues, write_verified_image
@@ -227,6 +228,33 @@ def state(request: Request):
     require_auth(request.headers.get("authorization"))
     with store.lock:
         return public_state()
+
+
+class ValidatePathsPayload(BaseModel):
+    paths: list[str]
+
+
+class RevealPayload(BaseModel):
+    path: str
+
+
+@app.get("/v1/system/telemetry")
+def telemetry_endpoint(request: Request):
+    require_auth(request.headers.get("authorization"))
+    return get_system_telemetry(ROOT)
+
+
+@app.post("/v1/system/validate_paths")
+def validate_paths_endpoint(request: Request, payload: ValidatePathsPayload):
+    require_auth(request.headers.get("authorization"))
+    return {"results": validate_disk_paths(payload.paths)}
+
+
+@app.post("/v1/system/reveal_path")
+def reveal_path_endpoint(request: Request, payload: RevealPayload):
+    require_auth(request.headers.get("authorization"))
+    success = reveal_path_in_explorer(payload.path)
+    return {"ok": success}
 
 
 @app.post("/v1/open")
