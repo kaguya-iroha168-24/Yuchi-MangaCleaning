@@ -1,7 +1,7 @@
 export const studioShortcuts = {
   'Ctrl+O': 'open', 'Ctrl+S': 'save', 'Ctrl+Shift+S': 'scan',
   'Ctrl+Z': 'undo', 'Ctrl+Shift+Z': 'redo', 'Ctrl+E': 'export', 'Ctrl+,': 'settings',
-  V: 'select', B: 'manual', T: 'text', H: 'pan', M: 'mask', Z: 'zoom', F: 'view', Space: 'pan-hold',
+  V: 'select', B: 'manual', T: 'text', H: 'pan', M: 'mask', O: 'reorder', S: 'split', Z: 'zoom', F: 'view', Space: 'pan-hold',
 } as const;
 export type StudioShortcut = typeof studioShortcuts[keyof typeof studioShortcuts];
 type KeyEvent = Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey' | 'isComposing'>;

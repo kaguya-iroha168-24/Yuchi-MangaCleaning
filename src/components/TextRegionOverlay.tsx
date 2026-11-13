@@ -5,7 +5,7 @@ import { editRegion, RegionInteraction, type RegionHandle, type RegionRect } fro
 
 const handles = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const;
 type Gesture = { id: string; rect: number[]; handle: RegionHandle; start: Point; pointer: number; element: HTMLElement; moved: boolean };
-type RegionObject = { id: string; rect: number[]; text: string; number?: number; locked?: boolean; bubbleBound?: boolean; status?: 'raw' | 'draft' | 'done' | 'error' | 'excluded' };
+type RegionObject = { id: string; rect: number[]; text: string; number?: number; locked?: boolean; bubbleBound?: boolean; status?: 'raw' | 'draft' | 'done' | 'error' | 'excluded'; overflow?: boolean; reorderNumber?: number | null };
 
 export const TextRegionOverlay = memo(function TextRegionOverlay(props: {
   regions: RegionObject[]; selected: string | null; scale: number; offset: Point; width: number; height: number; imageWidth: number; imageHeight: number;
@@ -15,6 +15,7 @@ export const TextRegionOverlay = memo(function TextRegionOverlay(props: {
   onPointer: (point: Point) => void; onWheel: (event: WheelEvent) => void;
   candidate?: boolean; reviewIds?: Set<string>; selectedIds?: Set<string>; onMultiSelect?: (id: string, multi: boolean) => void; typography?: boolean; images?: Record<string, TypographyRender>; showCovers?: boolean;
   showHighlight?: boolean; selectionOnly?: boolean; numberedText?: boolean;
+  reorderMode?: boolean; reorderOrder?: Record<string, number>; onReorderClick?: (id: string) => void;
 }) {
   const draft = useSyncExternalStore(props.controller.subscribe, props.controller.getSnapshot);
   const gesture = useRef<Gesture | null>(null);
@@ -35,7 +36,8 @@ export const TextRegionOverlay = memo(function TextRegionOverlay(props: {
   const begin = (event: React.PointerEvent<HTMLElement>, region: RegionObject, handle: RegionHandle) => {
     if (!props.enabled || event.button !== 0) return;
     event.preventDefault(); event.stopPropagation();
-    if (props.candidate && (event.ctrlKey || event.metaKey)) { props.onMultiSelect?.(region.id, true); return; }
+    if (props.reorderMode) { event.preventDefault(); event.stopPropagation(); props.onReorderClick?.(region.id); return; }
+    if ((props.candidate || props.numberedText) && (event.ctrlKey || event.metaKey || event.shiftKey)) { event.preventDefault(); event.stopPropagation(); props.onMultiSelect?.(region.id, true); return; }
     if (props.selectionOnly) { event.currentTarget.focus({ preventScroll: true }); props.onSelect(region.id); return; }
     if (props.selected !== region.id) props.onSelect(region.id);
     event.currentTarget.focus({ preventScroll: true });
@@ -63,9 +65,13 @@ export const TextRegionOverlay = memo(function TextRegionOverlay(props: {
       const intersects = (a: number, b: number, c: number, d: number) => a + c >= 0 && b + d >= 0 && a <= props.width && b <= props.height;
       if (!intersects(left, top, w, h) && !(cover && intersects(props.offset.x + cover[0] * props.scale, props.offset.y + cover[1] * props.scale, cover[2] * props.scale, cover[3] * props.scale))) return null;
       const active = (props.selectedIds ? props.selectedIds.has(region.id) : region.id === props.selected) && (props.showHighlight ?? props.showSelection);
+      const isMulti = Boolean(!props.reorderMode && props.selectedIds && props.selectedIds.size >= 2 && props.selectedIds.has(region.id));
+      const reorderStep = region.reorderNumber ?? props.reorderOrder?.[region.id] ?? null;
+      const isReorderAssigned = Boolean(props.reorderMode && reorderStep !== null && reorderStep !== undefined);
+      const isReorderPending = Boolean(props.reorderMode && (reorderStep === null || reorderStep === undefined));
       const statusClass = region.status ? `status-${region.status}` : 'status-raw';
       return <div key={region.id} data-text-region={props.typography ? undefined : region.id} data-dialogue={props.typography ? region.id : undefined} role="button" aria-label={`${props.candidate ? 'Bubble' : props.typography ? 'Dialogue' : 'Text region'} ${String(region.number ?? index + 1).padStart(2, '0')}: ${region.text || 'empty text'}`} aria-pressed={active} tabIndex={props.enabled ? 0 : -1}
-        className={`text-region-box ${props.typography ? 'typography-region-box' : ''} ${props.candidate ? `candidate-region-box ${statusClass}` : ''} ${props.numberedText ? 'source-detection-box' : ''} ${props.reviewIds?.has(region.id) ? 'needs-review' : ''} ${active ? 'is-selected' : ''}`} style={{ left, top, width: w, height: h, pointerEvents: props.enabled ? 'auto' : 'none', zIndex: props.candidate && active && props.showSelection ? 2 : undefined }}
+        className={`text-region-box ${props.typography ? 'typography-region-box' : ''} ${props.candidate ? `candidate-region-box ${statusClass}` : ''} ${props.numberedText ? 'source-detection-box' : ''} ${props.reviewIds?.has(region.id) ? 'needs-review' : ''} ${active ? 'is-selected' : ''} ${isMulti ? 'is-multi-selected' : ''} ${region.overflow ? 'is-overflowing' : ''} ${isReorderAssigned ? 'is-reorder-assigned' : ''} ${isReorderPending ? 'is-reorder-pending' : ''}`} style={{ left, top, width: w, height: h, pointerEvents: props.enabled ? 'auto' : 'none', zIndex: (props.candidate || props.numberedText) && (active || isReorderAssigned) ? 3 : undefined }}
         onPointerDown={event => begin(event, region, 'move')}
         onPointerMove={event => { const next = position(event); if (next && gesture.current?.moved) props.controller.update({ id: region.id, rect: next }); const bounds = event.currentTarget.getBoundingClientRect(); const native = { x: x + (event.clientX - bounds.left) / props.scale, y: y + (event.clientY - bounds.top) / props.scale }; if (!gesture.current) props.onPointer(native); }}
         onPointerUp={event => {
@@ -79,10 +85,15 @@ export const TextRegionOverlay = memo(function TextRegionOverlay(props: {
           } else { props.controller.flush(null); props.onGesture(false); }
         }}
         onPointerCancel={cancel} onLostPointerCapture={() => { if (gesture.current) cancel(); }}
-        onDoubleClick={event => { if (props.enabled && !region.locked) { event.stopPropagation(); props.onEdit(region); } }}
-        onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); cancel(); } if (event.key === 'Enter' && props.enabled) { event.preventDefault(); event.stopPropagation(); props.onSelect(region.id); if (!region.locked) props.onEdit(region); } }}>
-        {props.candidate && <span className={`candidate-number ${statusClass}`}>{String(region.number ?? index+1).padStart(2,'0')}{props.reviewIds?.has(region.id) ? ' · Review' : ''}</span>}
-        {props.numberedText && <span className="source-detection-number">T{String(index+1).padStart(2,'0')}</span>}
+        onDoubleClick={event => { if (props.enabled && !props.reorderMode && !region.locked) { event.stopPropagation(); props.onEdit(region); } }}
+        onKeyDown={event => { if (event.key === 'Escape' && !props.reorderMode) { event.stopPropagation(); cancel(); } if (event.key === 'Enter' && props.enabled && !props.reorderMode) { event.preventDefault(); event.stopPropagation(); props.onSelect(region.id); if (!region.locked) props.onEdit(region); } }}>
+        {props.reorderMode
+          ? <span className={`candidate-number ${isReorderAssigned ? 'is-reorder-badge' : 'is-reorder-pending-badge'}`}>{isReorderAssigned ? `#${String(reorderStep).padStart(2, '0')} ✓` : 'Click'}</span>
+          : <>
+              {props.candidate && <span className={`candidate-number ${statusClass}`}>{String(region.number ?? index+1).padStart(2,'0')}{props.reviewIds?.has(region.id) ? ' · Review' : ''}</span>}
+              {region.overflow && <span className="overflow-warning-badge" title="Text exceeds bubble bounds">! Overflow</span>}
+            </>}
+        {props.numberedText && !props.reorderMode && <span className="source-detection-number">T{String(region.number ?? index+1).padStart(2,'0')}</span>}
         {cover && raster?.coverPng && <img className="typography-cover" src={`data:image/png;base64,${raster.coverPng}`} style={{ left: (cover[0] - x) * props.scale, top: (cover[1] - y) * props.scale, width: cover[2] * props.scale, height: cover[3] * props.scale }} draggable={false} alt="" />}
         {showInk && <img className="typography-raster" src={`data:image/png;base64,${raster.png}`} style={anchor ? {left:(anchor[0]-x)*props.scale, top:(anchor[1]-y)*props.scale, width:raster.width*props.scale, height:raster.height*props.scale} : undefined} draggable={false} alt="" />}
         {active && props.showSelection && !region.locked && handles.map(handle => <span key={handle} role="button" tabIndex={props.enabled ? 0 : -1} aria-label={`Resize ${props.candidate ? 'bubble' : props.typography ? 'dialogue' : 'text region'} ${handle}`} className={`text-region-handle handle-${handle}`} onPointerDown={event => begin(event, region, handle)} />)}

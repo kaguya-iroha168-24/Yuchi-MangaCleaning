@@ -1,5 +1,6 @@
 import { bubbleAt, selectionLayer } from '../ui/selection';
-import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useQolCanvas } from '../ui/qolContext';
+import { memo, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Stage, Layer, Image as CanvasImage, Rect, Line, Group, Circle } from 'react-konva';
 import type Konva from 'konva';
 import { TextRegionOverlay } from './TextRegionOverlay';
@@ -17,7 +18,7 @@ function useSize(ref: React.RefObject<HTMLDivElement | null>) {
   return size;
 }
 
-export function FloatingCanvasToolbar({ controller }: { controller: ViewportController }) {
+export function FloatingCanvasToolbar({ controller, boxOps }: { controller: ViewportController; boxOps?: ReactNode }) {
   const view = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const { scale } = useSyncExternalStore(controller.subscribeMetrics, controller.getMetrics);
   return <aside className="floating-canvas-pill" role="toolbar" aria-label="Canvas viewport controls" onPointerDown={event => event.stopPropagation()}>
@@ -31,7 +32,7 @@ export function FloatingCanvasToolbar({ controller }: { controller: ViewportCont
     <div className="pill-group pill-modes">
       <button type="button" className={`pill-btn ${view.mode === 'dual' ? 'active' : ''}`} title="Synchronized Dual Canvas" aria-pressed={view.mode === 'dual'} onClick={() => controller.update({ mode: 'dual', peek: false })}><DualCanvasSplitIcon size={12} /><span>Split</span></button>
       <button type="button" className={`pill-btn ${view.mode === 'single' ? 'active' : ''}`} title="Single Focus View" aria-pressed={view.mode === 'single'} onClick={() => controller.update({ mode: 'single', peek: false })}>Single</button>
-      <button type="button" className={`pill-btn ${view.mode === 'onion' ? 'active' : ''}`} title="Onion Skin Comparison" aria-pressed={view.mode === 'onion'} onClick={() => controller.update({ mode: 'onion', peek: false })}>Onion</button>
+      <button type="button" className={`pill-btn ${view.mode === 'onion' ? 'active' : ''}`} title="Onion Skin Comparison" aria-pressed={view.mode === 'onion'} onClick={() => controller.update({ mode: 'onion', peek: false })}>Onion</button>{boxOps}
     </div>
   </aside>;
 }
@@ -112,6 +113,7 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
   const size = useSize(host);
   const stage = useRef<Konva.Stage>(null);
   const view = useSyncExternalStore(props.controller.subscribe, props.controller.getSnapshot);
+  const qol = useQolCanvas();
   const drag = useRef<{ point: Point; pan: Point } | null>(null);
   const rightDrag = useRef<{ pointer: number; point: Point; pan: Point } | null>(null);
   const selectionStart = useRef<Point | null>(null);
@@ -190,11 +192,25 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
               return;
             }
             if (brushEnabled && event.evt.button === 0) { brushPoints.current = [point]; setBrushDraft([point]); }
+            if (qol?.reorderMode && event.target === event.target.getStage()) {
+              const screen = stage.current?.getPointerPosition();
+              if (screen) {
+                const pt = { x: (screen.x - offset.x) / scale, y: (screen.y - offset.y) / scale };
+                const hit = textMode ? bubbleAt(props.textRegions, pt) : bubbleAt(props.bubbles, pt);
+                if (hit) qol.onReorderClick(hit.id);
+              }
+            }
+            else if (props.tool === 'select' && props.editable && event.target === event.target.getStage() && event.evt.shiftKey) {
+              const screen = stage.current?.getPointerPosition();
+              const hit = !textMode && screen && bubbleAt(props.bubbles, { x: (screen.x - offset.x) / scale, y: (screen.y - offset.y) / scale });
+              if (hit) props.onBubble(hit.id, true);
+              else drag.current = { point: { x: event.evt.clientX, y: event.evt.clientY }, pan: view.pan };
+            }
             else if (props.tool === 'pan' || event.evt.button === 1 || event.evt.shiftKey && props.tool !== 'manual' && props.tool !== 'text') drag.current = { point: { x: event.evt.clientX, y: event.evt.clientY }, pan: view.pan };
             else if (props.tool === 'select' && props.editable && event.target === event.target.getStage()) {
               const screen = stage.current?.getPointerPosition();
               const hit = !textMode && screen && bubbleAt(props.bubbles, { x: (screen.x - offset.x) / scale, y: (screen.y - offset.y) / scale });
-              if (hit) props.onBubble(hit.id, Boolean(event.evt.ctrlKey || event.evt.metaKey));
+              if (hit) props.onBubble(hit.id, Boolean(event.evt.ctrlKey || event.evt.metaKey || event.evt.shiftKey));
               else props.onDeselect();
             }
             else if (props.tool === 'manual' || props.tool === 'text') { selectionStart.current = point; setDraft([point.x, point.y, 0, 0]); }
@@ -238,12 +254,17 @@ const CanvasPane = memo(function CanvasPane(props: PaneProps) {
           {brushEnabled && <Layer listening={false}><Circle ref={brushCursor} visible={false} radius={props.brushRadius} stroke={props.tool === 'heal-restore' ? '#34d399' : props.tool === 'heal-pure' ? '#38bdf8' : '#E63946'} strokeWidth={2 / scale} /></Layer>}
           {draft && <Layer listening={false}><Rect x={draft[0]} y={draft[1]} width={draft[2]} height={draft[3]} stroke="#B52837" strokeWidth={2 / scale} dash={[7 / scale, 4 / scale]} fill="rgba(230,57,70,.12)" /></Layer>}
         </Stage>
-        {!textMode && (props.showBoxes || selectedBubble) && !maskMode && (props.source==='original' || view.mode!=='dual' || layer==='bubble') && <TextRegionOverlay showHighlight={props.showSelection} selectionOnly={props.source==='original'} candidate regions={props.bubbles.filter(b=>(props.showBoxes && (props.source==='original' || view.mode!=='dual')) || b.id===selectedBubble).map(b => ({ id:b.id, rect:b.rect as RegionRect, text:'', number:props.bubbles.indexOf(b)+1, status: props.bubbleStatuses?.[b.id] ?? (b.excluded ? 'excluded' : 'raw') }))} reviewIds={new Set(props.bubbles.filter(b => b.confidence != null && b.confidence < .25).map(b => b.id))} selected={[...props.selected][0] ?? null} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='bubble'} controller={props.interaction} onSelect={id => props.onBubble(id,false)} onMultiSelect={props.onBubble} onEdit={() => {}} onCommit={props.onCommitBubble} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({point,source:props.source})} onWheel={event => {event.preventDefault();const bounds=host.current?.getBoundingClientRect();if(bounds) props.controller.update(zoomAt(view,event.deltaY<0?1.11:.9,{x:event.clientX-bounds.left,y:event.clientY-bounds.top},size,props,scale));}} />}
-        {props.showRegions && !maskMode && (showTextBoxes || props.source==='editing' && props.activeLayer==='source') && <TextRegionOverlay
-          numberedText={showTextBoxes} selectionOnly={props.source==='original'}
+        {!textMode && (props.showBoxes || props.selected.size > 0 || qol?.reorderMode) && !maskMode && (props.source==='original' || view.mode!=='dual' || layer==='bubble' || qol?.reorderMode) && <TextRegionOverlay showHighlight={props.showSelection} selectionOnly={Boolean(qol?.reorderMode) || props.source==='original'} candidate regions={props.bubbles.filter(b=>(props.showBoxes && (props.source==='original' || view.mode!=='dual' || qol?.reorderMode)) || props.selected.has(b.id)).map(b => ({ id:b.id, rect:b.rect as RegionRect, text:'', number:props.bubbles.indexOf(b)+1, status: props.bubbleStatuses?.[b.id] ?? (b.excluded ? 'excluded' : 'raw'), overflow: Boolean(qol?.overflowIds?.has(b.id)) }))} reviewIds={new Set(props.bubbles.filter(b => b.confidence != null && b.confidence < .25).map(b => b.id))} selected={[...props.selected][0] ?? null} selectedIds={props.selected} reorderMode={Boolean(qol?.reorderMode)} reorderOrder={qol?.reorderOrder} onReorderClick={qol?.onReorderClick} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='bubble'} controller={props.interaction} onSelect={id => props.onBubble(id,false)} onMultiSelect={props.onBubble} onEdit={() => {}} onCommit={props.onCommitBubble} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({point,source:props.source})} onWheel={event => {event.preventDefault();const bounds=host.current?.getBoundingClientRect();if(bounds) props.controller.update(zoomAt(view,event.deltaY<0?1.11:.9,{x:event.clientX-bounds.left,y:event.clientY-bounds.top},size,props,scale));}} />}
+        {props.showRegions && !maskMode && (showTextBoxes || (textMode && qol?.reorderMode) || (!qol?.reorderMode && props.source==='editing' && props.activeLayer==='source')) && <TextRegionOverlay
+          numberedText={showTextBoxes || (textMode && Boolean(qol?.reorderMode))} selectionOnly={Boolean(qol?.reorderMode) || props.source==='original'}
           showHighlight={props.showSelection && props.activeLayer==='source'}
-          regions={showTextBoxes ? props.textRegions.filter(region => region.origin === 'automatic_text_detection' || region.origin === 'manual' || region.id === props.selectedTextId) : props.textRegions.filter(region => region.id === props.selectedTextId)} selected={props.selectedTextId} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='source'} controller={props.interaction} onSelect={props.onText} onEdit={region => { const text = props.textRegions.find(item => item.id === region.id); if (text) props.onEditText(text); }} onCommit={props.onCommitRegion} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({ point, source: props.source })} onWheel={event => { event.preventDefault(); const bounds = host.current?.getBoundingClientRect(); if (bounds) props.controller.update(zoomAt(view, event.deltaY < 0 ? 1.11 : .9, { x: event.clientX - bounds.left, y: event.clientY - bounds.top }, size, props, scale)); }} />}
-        {props.source === 'editing' && !view.peek && <div className="typography-overlay-clip" style={{ opacity: (props.layerOpacity?.typeset ?? 100) / 100, clipPath: props.onion ? `inset(0 0 0 ${view.split*100}%)` : undefined }}><TypographyOverlay {...props.typography} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='dialogue'} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({ point, source: props.source })} onWheel={event => { event.preventDefault(); const bounds = host.current?.getBoundingClientRect(); if (bounds) props.controller.update(zoomAt(view, event.deltaY < 0 ? 1.11 : .9, { x: event.clientX-bounds.left, y: event.clientY-bounds.top }, size, props, scale)); }} /></div>}
+          regions={(showTextBoxes || (textMode && qol?.reorderMode)
+            ? props.textRegions.filter(region => region.origin === 'automatic_text_detection' || region.origin === 'manual' || region.id === props.selectedTextId || Boolean(qol?.selectedTextIds?.has(region.id)))
+            : props.textRegions.filter(region => region.id === props.selectedTextId || Boolean(qol?.selectedTextIds?.has(region.id)))
+          ).map(region => ({ ...region, number: qol?.readingOrderMap?.[region.id], overflow: Boolean(qol?.overflowIds?.has(region.id)) }))}
+          selected={props.selectedTextId} selectedIds={qol?.selectedTextIds} onMultiSelect={qol?.onTextMultiSelect}
+          reorderMode={Boolean(qol?.reorderMode)} reorderOrder={qol?.reorderOrder} onReorderClick={qol?.onReorderClick} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select'} showSelection={props.showSelection && layer==='source'} controller={props.interaction} onSelect={props.onText} onEdit={region => { const text = props.textRegions.find(item => item.id === region.id); if (text) props.onEditText(text); }} onCommit={props.onCommitRegion} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({ point, source: props.source })} onWheel={event => { event.preventDefault(); const bounds = host.current?.getBoundingClientRect(); if (bounds) props.controller.update(zoomAt(view, event.deltaY < 0 ? 1.11 : .9, { x: event.clientX - bounds.left, y: event.clientY - bounds.top }, size, props, scale)); }} />}
+        {props.source === 'editing' && !view.peek && <div className="typography-overlay-clip" style={{ opacity: (props.layerOpacity?.typeset ?? 100) / 100, clipPath: props.onion ? `inset(0 0 0 ${view.split*100}%)` : undefined, pointerEvents: qol?.reorderMode ? 'none' : undefined }}><TypographyOverlay {...props.typography} overflowIds={qol?.overflowIds} scale={scale} offset={offset} width={size.width} height={size.height} imageWidth={props.width} imageHeight={props.height} enabled={props.editable && props.tool === 'select' && !qol?.reorderMode} showSelection={props.showSelection && layer==='dialogue'} onGesture={props.onGesture} onPointer={point => props.controller.updatePointer({ point, source: props.source })} onWheel={event => { event.preventDefault(); const bounds = host.current?.getBoundingClientRect(); if (bounds) props.controller.update(zoomAt(view, event.deltaY < 0 ? 1.11 : .9, { x: event.clientX-bounds.left, y: event.clientY-bounds.top }, size, props, scale)); }} /></div>}
         {props.onion && <div className="onion-divider" role="slider" aria-label="Drag comparison divider" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(view.split * 100)} tabIndex={0} style={{ left: `${view.split * 100}%` }}
           onPointerDown={event => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); }}
           onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) { const bounds = host.current?.getBoundingClientRect(); if (bounds) props.controller.update({ split: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) }); } }}
@@ -268,6 +289,7 @@ export function CanvasWorkspace(props: {
   const host = useRef<HTMLDivElement>(null);
   const size = useSize(host);
   const view = useSyncExternalStore(props.controller.subscribe, props.controller.getSnapshot);
+  const qol = useQolCanvas();
   const rulerSize = props.showRulers ? 20 : 0;
   const area = { width: Math.max(1, (view.mode === 'dual' ? (size.width - 1) / 2 : size.width) - rulerSize), height: Math.max(1, size.height - 27 - rulerSize) };
   const scale = fitScale(area, props, view.fit, view.zoom);
@@ -279,7 +301,15 @@ export function CanvasWorkspace(props: {
     <div className={`dual-canvas viewport-panes mode-${view.mode}`} ref={host} role="region" aria-label={`Page canvas: ${props.name}`}>
       {view.mode === 'dual' && <CanvasPane {...common} title="ORIGINAL" source="original" image={props.showOriginal ? props.original : null} comparison={null} mask={null} showMask={false} onion={false} />}
       <CanvasPane {...common} title={view.mode === 'onion' ? 'ONION-SKIN COMPARISON' : 'TRANSLATED'} source="editing" image={props.showWorking ? props.working : null} comparison={props.showOriginal ? props.original : null} mask={props.mask} showMask={props.showMask} onion={view.mode === 'onion'} onBrush={props.onBrush} />
-      <FloatingCanvasToolbar controller={props.controller} />
+      {qol?.reorderMode && (
+        <div className="reorder-hud-banner" role="status" aria-live="polite">
+          <span>Reorder Mode: Click bubbles in reading order</span>
+          <span className="reorder-hud-next">(Next: #{String(qol.reorderNextNumber).padStart(2, '0')})</span>
+          <span>· Press Esc or Enter to finish</span>
+          <button type="button" className="reorder-hud-done" onClick={qol.onFinishReorder}>Finish</button>
+        </div>
+      )}
+      <FloatingCanvasToolbar controller={props.controller} boxOps={qol?.boxOpsNode} />
     </div>
   </>;
 }

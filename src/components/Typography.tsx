@@ -3,11 +3,11 @@ import { AlignCenter, AlignLeft, AlignRight, ArrowDownUp, Bold, ChevronDown, Che
 import type { Api, Dialogue, DialogueStyle, FontEntry, LayerPatch, TypographyRender } from '../api';
 import { FontBrowser } from './FontBrowser';
 import type { Point } from '../ui/viewport';
-import { cardDialogue, fontSizePatch, readSizePresets, type TypographySession } from '../ui/typography';
+import { autoFitFontSizePatch, cardDialogue, computeAutoFitFontSize, evaluateDialogueOverflow, manualFontSizePatch, readSizePresets, type TypographySession } from '../ui/typography';
 import { TextRegionOverlay } from './TextRegionOverlay';
 
 export function TypographyOverlay(props: {
-  session: TypographySession; dialogues: Dialogue[]; selected: string | null; visible: boolean; coverText?: boolean;
+  session: TypographySession; dialogues: Dialogue[]; selected: string | null; visible: boolean; coverText?: boolean; overflowIds?: Set<string>;
   scale: number; offset: Point; width: number; height: number; imageWidth: number; imageHeight: number;
   enabled: boolean; showSelection: boolean; onSelect: (id: string) => void; onEdit: (id: string) => void;
   onGesture: (active: boolean) => void; onPointer: (point: Point) => void; onWheel: (event: WheelEvent) => void;
@@ -24,7 +24,7 @@ export function TypographyOverlay(props: {
     setEditor(null);
   };
   if (!props.visible) return null;
-  const regions = props.dialogues.map(saved => live.drafts[saved.id] ?? saved).filter(text => text.visible).map(text => ({ id: text.id, text: text.text, locked: text.locked, bubbleBound: Boolean(text.bubble_id), rect: [Math.floor(text.x), Math.floor(text.y), Math.ceil(text.width), Math.ceil(text.height)] }));
+  const regions = props.dialogues.map(saved => live.drafts[saved.id] ?? saved).filter(text => text.visible).map(text => ({ id: text.id, text: text.text, locked: text.locked, bubbleBound: Boolean(text.bubble_id), overflow: Boolean(props.overflowIds?.has(text.id) || (text.bubble_id && props.overflowIds?.has(text.bubble_id)) || (text.source_region_id && props.overflowIds?.has(text.source_region_id))), rect: [Math.floor(text.x), Math.floor(text.y), Math.ceil(text.width), Math.ceil(text.height)] }));
   const editWidth = editing ? Math.min(props.width, Math.max(180, editing.width * props.scale)) : 0;
   const editHeight = editing ? Math.min(props.height, Math.max(72, Math.min(200, editing.height * props.scale))) : 0;
   return <>
@@ -80,15 +80,18 @@ function TextColor({ value, disabled, onValue, onCommit, label = 'Text color' }:
 const sizePresetsKey = 'yuchi-tauri-font-size-presets';
 const emptyDialogue: Dialogue = { id: '', text: '', bubble_id: null, source_region_id: null, x: 0, y: 0, width: 160, height: 80, family: 'Arial', size: 22, weight: 400, minimum_size: 12, color: '#111111', alignment: 'center', visible: true, auto_fit: true, padding: 8, style: {} };
 
-export function TypographyControls({ api, session, selected, disabled: unavailable, onDelete, sourceControls, sourceOptions, bubbleHeader, onApprove, approveDisabled }: { api: Api | null; session: TypographySession; selected: Dialogue | null; disabled: boolean; onCreate?: () => void; onDelete: (id: string) => void; sourceControls: React.ReactNode; sourceOptions?: React.ReactNode; bubbleHeader?: React.ReactNode; onApprove?: () => void; approveDisabled?: boolean }) {
+export function TypographyControls({ api, session, selected, disabled: unavailable, onDelete, sourceControls, sourceOptions, bubbleHeader, onApprove, approveDisabled, boxBounds, onExpandBox, expandBusy }: { api: Api | null; session: TypographySession; selected: Dialogue | null; disabled: boolean; onCreate?: () => void; onDelete: (id: string) => void; sourceControls: React.ReactNode; sourceOptions?: React.ReactNode; bubbleHeader?: React.ReactNode; onApprove?: () => void; approveDisabled?: boolean; boxBounds?: [number, number] | null; onExpandBox?: () => void; expandBusy?: boolean }) {
   const live = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const [fonts, setFonts] = useState<FontEntry[]>([]);
   const [fontError, setFontError] = useState('');
   const [caseNotice, setCaseNotice] = useState('');
   const [sizePresets, setSizePresets] = useState(() => readSizePresets(globalThis.localStorage?.getItem(sizePresetsKey) ?? null));
   const caseAction = useRef(0);
+  const autoFitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const caseTarget = useRef(selected?.id); caseTarget.current = selected?.id;
-  useEffect(() => { caseAction.current++; setCaseNotice(''); }, [selected?.id]);
+  useEffect(() => { caseAction.current++; setCaseNotice(''); if (autoFitTimer.current) { clearTimeout(autoFitTimer.current); autoFitTimer.current = null; } }, [selected?.id]);
+  useEffect(() => () => { if (autoFitTimer.current) clearTimeout(autoFitTimer.current); }, []);
+  // timer cleanup above covers case reset
   useEffect(() => {
     setFonts([]); setFontError('');
     if (!api) return;
@@ -106,6 +109,10 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
   const selectedText = selected ? live.drafts[selected.id] ?? selected : null; const text = selectedText ?? emptyDialogue;
   const disabled = unavailable || !selectedText || Boolean(selectedText.locked);
   const style = text?.style ?? {};
+  const boxW = Math.max(8, boxBounds?.[0] ?? text.width);
+  const boxH = Math.max(8, boxBounds?.[1] ?? text.height);
+  const overflowState = selectedText ? evaluateDialogueOverflow(text, boxW, boxH) : { fontSize: text.size, lines: [], isOverflowing: false, totalTextHeight: 0, maxWordWidth: 0 };
+  const lineCount = overflowState.lines.length || (text.text.trim() ? 1 : 0);
   const commit = () => { if (selectedText) void session.flush().catch(() => {}); };
   const change = (patch: Partial<Dialogue>, immediate = false) => { if (selectedText) { setCaseNotice(''); session.edit(selectedText.id, patch); if (immediate) commit(); } };
   const changeStyle = (patch: DialogueStyle, immediate = false) => {
@@ -113,7 +120,7 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
     const current = session.getSnapshot().drafts[text.id] ?? text;
     change({ style: { ...current.style, ...patch } }, immediate);
   };
-  const bumpSize=(delta:number)=>{if(!selectedText)return;const current=session.getSnapshot().drafts[selectedText.id] ?? selectedText;session.edit(selectedText.id,fontSizePatch(current,current.size+delta));commit();};
+  const bumpSize=(delta:number)=>{if(!selectedText)return;const current=session.getSnapshot().drafts[selectedText.id] ?? selectedText;session.edit(selectedText.id,manualFontSizePatch(current,current.size+delta));commit();};
   const currentFont = fonts.find(font => font.family === text?.family);
   const supportsBold = Boolean((style.italic ? currentFont?.italicWeights : currentFont?.weights)?.includes(700));
   const layer = selectedText ? live.layers[selectedText.id] : null;
@@ -134,9 +141,44 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
       {selectedText && <div className="translation-field-container">
         <div className="field-header-row">
           <label htmlFor="typography-text">Translation</label>
-          <span className="char-counter">{text.text.length} chars</span>
+          <span className="char-counter">{text.text.length} chars · {lineCount} ln</span>
         </div>
-        <textarea id="typography-text" aria-label="Typeset dialogue text" maxLength={4000} value={text.text} disabled={disabled} onChange={event => change({ text: event.target.value })} onBlur={commit} placeholder="Enter Indonesian dialogue…" />
+        <textarea id="typography-text" aria-label="Typeset dialogue text" maxLength={4000} value={text.text} disabled={disabled} onChange={event => {
+          const nextText = event.target.value;
+          change({ text: nextText });
+          if (autoFitTimer.current) { clearTimeout(autoFitTimer.current); autoFitTimer.current = null; }
+          const id = selectedText.id;
+          const targetBoxW = boxW;
+          const targetBoxH = boxH;
+          autoFitTimer.current = setTimeout(() => {
+            autoFitTimer.current = null;
+            const current = session.getSnapshot().drafts[id] ?? selected;
+            if (!current || !current.auto_fit) return;
+            const fitted = computeAutoFitFontSize({
+              text: nextText,
+              boxWidth: targetBoxW,
+              boxHeight: targetBoxH,
+              fontFamily: current.family,
+              fontWeight: current.weight,
+              italic: Boolean(current.style?.italic),
+              lineHeight: current.style?.line_height ?? 1.15,
+              letterSpacing: current.style?.letter_spacing ?? 0,
+            });
+            if (fitted.fontSize !== current.size) {
+              session.edit(id, autoFitFontSizePatch(current, fitted.fontSize));
+            }
+          }, 80);
+        }} onBlur={commit} placeholder="Enter Indonesian dialogue…" />
+        {overflowState.isOverflowing && (
+          <div className="overflow-inspector-bar" role="status">
+            <span className="overflow-warning-chip">⚠ Text exceeds bubble bounds</span>
+            {onExpandBox && (
+              <button type="button" className="fit-box-btn" disabled={disabled || expandBusy} onClick={() => onExpandBox()} title="Expand box padding by 15% and refit">
+                {expandBusy ? 'Fitting…' : 'Fit Box to Text'}
+              </button>
+            )}
+          </div>
+        )}
       </div>}
       {onApprove && <div className="approve-action"><button type="button" className="approve-button" disabled={approveDisabled || disabled} onClick={onApprove} title="Approve and move to next bubble (Ctrl+Enter)">✓ Approve (Ctrl+Enter)</button></div>}
       {sourceOptions}</div></details>}
@@ -148,10 +190,10 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
       <div className="type-size-row">
         <div className="size-stepper">
           <button type="button" disabled={disabled || text.size<=8} aria-label="Decrease requested font size" title="Decrease requested font size" onClick={()=>bumpSize(-1)}>−</button>
-          <NativeNumber label="Font size (px)" icon={<Type size={13} />} value={text.size} min={8} max={144} disabled={disabled} onValue={size => change(fontSizePatch(text, size))} onCommit={commit} />
+          <NativeNumber label="Font size (px)" icon={<Type size={13} />} value={text.size} min={8} max={144} disabled={disabled} onValue={size => change(manualFontSizePatch(text, size))} onCommit={commit} />
           <button type="button" disabled={disabled || text.size>=144} aria-label="Increase requested font size" title="Increase requested font size" onClick={()=>bumpSize(1)}>+</button>
         </div>
-        <div className="type-presets" role="group" aria-label="Apply font size preset">{sizePresets.map((size, index) => <button key={index} type="button" disabled={disabled || size === null} aria-label={`Size preset ${index + 1}${size === null ? ', empty' : `, ${size} px`}`} title={size === null ? 'Empty preset · save a size in Advanced' : `Apply ${size} px`} aria-pressed={Boolean(selectedText) && index === sizePresets.indexOf(text.size)} onClick={() => { if (size !== null) change(fontSizePatch(text, size), true); }}>{index + 1}</button>)}</div>
+        <div className="type-presets" role="group" aria-label="Apply font size preset">{sizePresets.map((size, index) => <button key={index} type="button" disabled={disabled || size === null} aria-label={`Size preset ${index + 1}${size === null ? ', empty' : `, ${size} px`}`} title={size === null ? 'Empty preset · save a size in Advanced' : `Apply ${size} px`} aria-pressed={Boolean(selectedText) && index === sizePresets.indexOf(text.size)} onClick={() => { if (size !== null) change(manualFontSizePatch(text, size), true); }}>{index + 1}</button>)}</div>
       </div>
       <div className="type-format-row">
       <div className="type-quick-actions" role="group" aria-label="Dialogue emphasis and letter case">
@@ -175,7 +217,11 @@ export function TypographyControls({ api, session, selected, disabled: unavailab
       </div>
       <div className="type-quick-actions" role="group" aria-label="Automatic text layout">
         <button type="button" aria-label="Auto Width" aria-pressed={Boolean(style.auto_width)} disabled={disabled} onClick={()=>changeStyle({auto_width:!style.auto_width},true)} title="Use the text width within the safe area"><MoveHorizontal size={14} aria-hidden="true" /> Auto Width</button>
-        <button type="button" aria-label="Auto Fit to Bubble" title="Fit the text inside the bubble" aria-pressed={text.auto_fit} disabled={disabled} onClick={()=>change({auto_fit:!text.auto_fit},true)}><Scaling size={14} aria-hidden="true" /> Auto Fit</button>
+        <button type="button" aria-label="Auto Fit to Bubble" title="Fit the text inside the bubble" aria-pressed={text.auto_fit} disabled={disabled} onClick={() => {
+          if (text.auto_fit) { change({ auto_fit: false }, true); return; }
+          const fitted = computeAutoFitFontSize({ text: text.text, boxWidth: boxW, boxHeight: boxH, fontFamily: text.family, fontWeight: text.weight, italic: Boolean(text.style?.italic), lineHeight: text.style?.line_height ?? 1.15, letterSpacing: text.style?.letter_spacing ?? 0 });
+          change(autoFitFontSizePatch(text, fitted.fontSize), true);
+        }}><Scaling size={14} aria-hidden="true" /> Auto Fit</button>
         <button type="button" title="Apply bold italic manga lettering and fit it inside the bubble" disabled={disabled || !text.text.trim()} onClick={() => fitText('manga')}><Type size={14} aria-hidden="true" /> Manga Style</button>
       </div>
       <div className="type-position">

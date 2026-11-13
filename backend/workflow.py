@@ -14,6 +14,7 @@ import numpy as np
 from backend.automatic_processing import clean_page
 from mangaclean.core.text_cleaning import restore_text, AUTO, TELEA, WHITE, NS, synthesize_texture_block
 from mangaclean.services.cleaning_pipeline import prepare_text_selection
+from mangaclean.services.manga_order import sort_items_manga_rtl
 from mangaclean.services.text_regions import locate_text, merge_text_candidates
 
 
@@ -88,6 +89,7 @@ def register(namespace):
                             doc = store.require()
                             graph = deepcopy(doc.region_graph)
                             count = merge_text_candidates(graph, candidates, doc.dialogues)
+                            graph.reading_order = [r.id for r in sort_items_manga_rtl(graph.text_regions, lambda r: r.rect)]
                             graph.validate(doc.source.shape, doc.bubbles)
                             working_img = doc.working.copy()
                             artwork_locked = doc.composition.get('artwork_locked')
@@ -201,7 +203,8 @@ def register(namespace):
                         batch = namespace['detect_with_fallback'](payload.provider, source, working, payload.device, store.cancel, None, None, None, on_detect_progress)
                         with store.lock:
                             check(job,page_id);doc=store.require();store.capture()
-                            doc.bubbles=[*manual_bubbles, *batch.bubbles[:200-len(manual_bubbles)]] if manual_bubbles else batch.bubbles
+                            raw_bubbles=[*manual_bubbles, *batch.bubbles[:200-len(manual_bubbles)]] if manual_bubbles else batch.bubbles
+                            doc.bubbles=sort_items_manga_rtl(raw_bubbles, lambda b: b.rect)
                             batch.metadata.update(cache_key=identity,displayed_count=len(doc.bubbles))
                             doc.detection_runs.append(batch.metadata);doc.revision+=1;doc.dirty=True;store.preview=None;detected+=1
                     else:reused+=1
@@ -213,6 +216,13 @@ def register(namespace):
                             if bubble.provenance.get('excluded'):continue
                             if not any(r.bubble_id==bubble.id for r in graph.text_regions):
                                 graph.add(m.TextRegion(rect=bubble_text_rect(bubble),bubble_id=bubble.id,provenance=dict(origin='automatic_bubble_text_region')))
+                        if needs_detection and graph.text_regions:
+                            graph.reading_order = [
+                                r.id for r in sort_items_manga_rtl(
+                                    graph.text_regions,
+                                    lambda r: next((b.rect for b in doc.bubbles if b.id == r.bubble_id), r.rect),
+                                )
+                            ]
                         graph.validate(doc.source.shape,doc.bubbles)
                         if len(graph.text_regions)!=len(doc.region_graph.text_regions):
                             if not needs_detection:

@@ -2,9 +2,9 @@ import { sourceValue } from './ui/sourceText';
 import { PageFrames, type PageFrame } from './ui/pageFrames';
 import { PageNavigation } from './ui/pageNavigation';
 import { processingPageIds, processingMessage, refreshJobImages, textCleanHint } from './ui/processing';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@radix-ui/react-tooltip';
-import { CircleHelp, Eye, FolderOpen, Layers3, Trash2, X } from 'lucide-react';
+import { ArrowUpDown, CircleHelp, Combine, Eye, FolderOpen, Layers3, ListOrdered, Scissors, Trash2, X } from 'lucide-react';
 import { MangaCleanLogo } from './components/MangaCleanIcons';
 import { Api, ApiError, type DetectionMode, type ExportPreflight, type Job, type LayerPatch, type PageComposition, type Preview, type State, type TextRegion, connect } from './api';
 import { ChapterNavigator } from './components/ChapterNavigator';
@@ -19,6 +19,8 @@ import { blocksStudioShortcuts, resolveStudioShortcut } from './ui/shortcuts';
 import { CanvasWorkspace, ViewportModeControls, ViewportZoomControls, type CanvasTool } from './components/CanvasWorkspace';
 import { SourceTextDialog, sessionForRegion, type TextEditSession } from './components/SourceTextDialog';
 import { RegionInteraction, type RegionRect } from './ui/regionEditing';
+import { computeAutoFitFontSize, evaluateDialogueOverflow } from './ui/mangaUtils';
+import { QolCanvasContext } from './ui/qolContext';
 import { TypographySession } from './ui/typography';
 import { TypographyCardControls, TypographyControls, TypographyLayerList } from './components/Typography';
 import { ImageAdjustments } from './components/ImageAdjustments';
@@ -27,6 +29,37 @@ import { ViewportController, type Point } from './ui/viewport';
 type Tool = CanvasTool;
 type Density = 'Balanced' | 'Compact' | 'Comfortable';
 const emptySelection = new Set<string>();
+
+async function applyAutoFitBatch(client: Api, applyState: (next: State) => void) {
+  const fresh = await client.get<State>('/v1/state');
+  const doc = fresh.document;
+  if (!doc || !doc.dialogues.length) return;
+  const bubbleById = new Map(doc.bubbles.map(b => [b.id, b]));
+  const updates: Array<{ id: string; size: number; minimum_size: number }> = [];
+  for (const d of doc.dialogues) {
+    if (!d.auto_fit || d.locked || !d.text.trim()) continue;
+    const parent = d.bubble_id ? bubbleById.get(d.bubble_id) : undefined;
+    const boxW = parent ? parent.rect[2] : d.width;
+    const boxH = parent ? parent.rect[3] : d.height;
+    const fitted = computeAutoFitFontSize({
+      text: d.text,
+      boxWidth: boxW,
+      boxHeight: boxH,
+      fontFamily: d.family,
+      fontWeight: d.weight,
+      italic: Boolean(d.style?.italic),
+      lineHeight: d.style?.line_height ?? 1.15,
+      letterSpacing: d.style?.letter_spacing ?? 0,
+    });
+    if (fitted.fontSize !== d.size) {
+      updates.push({ id: d.id, size: fitted.fontSize, minimum_size: Math.min(d.minimum_size, fitted.fontSize) });
+    }
+  }
+  if (updates.length > 0) {
+    const next = await client.post<State>('/v1/dialogues/auto-fit-batch', { pageId: doc.pageId, updates });
+    applyState(next);
+  }
+}
 function useImage(url: string | null): HTMLImageElement | null {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   useEffect(() => {
@@ -68,6 +101,7 @@ export default function App() {
   const [textEditorError, setTextEditorError] = useState('');
   const interaction = useMemo(() => new RegionInteraction(), []);
   const typography = useMemo(() => new TypographySession(), []);
+  const typographyLive = useSyncExternalStore(typography.subscribe, typography.getSnapshot);
   const [typographyDirty, setTypographyDirty] = useState(false);
   const [activeLayer, setActiveLayer] = useState<'bubble' | 'source' | 'dialogue' | null>(null);
   const [selectedDialogueId, setSelectedDialogueId] = useState<string | null>(null);
@@ -79,6 +113,19 @@ export default function App() {
   const [tool, setTool] = useState<Tool>('select');
   const viewport = useMemo(() => new ViewportController(), []);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedTextIds, setSelectedTextIds] = useState<Set<string>>(new Set());
+  const [reorderMode, setReorderMode] = useState(false);
+  const [reorderQueue, setReorderQueue] = useState<string[]>([]);
+  const [expandBusy, setExpandBusy] = useState(false);
+  const qolActionsRef = useRef({
+    reorderMode: false,
+    canMerge: false,
+    canSplit: false,
+    toggleReorderMode: async () => {},
+    finishReorderMode: async () => {},
+    mergeSelectedBoxes: async () => {},
+    splitSelectedBox: async () => {},
+  });
   const [showBoxes, setShowBoxes] = useState(true);
   const [showRulers, setShowRulers] = useState(false);
   const [showMask, setShowMask] = useState(false);
@@ -258,7 +305,9 @@ export default function App() {
       }
       if (job && (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') && completedJob.current !== `${job.id}:${job.status}`) {
         completedJob.current = `${job.id}:${job.status}`;
-        void refresh(api, refreshJobImages(job), undefined, undefined, job.type === 'detect-text', false, false).catch(reportError);
+        void refresh(api, refreshJobImages(job), undefined, undefined, job.type === 'detect-text', false, false)
+          .then(() => (job.status === 'done' && job.type === 'translate' ? applyAutoFitBatch(api, setState) : undefined))
+          .catch(reportError);
         if(job.status==='done' && ['process','detect-bubbles','detect-text'].includes(job.type))setSaveNotice(processingMessage(job));
         if(job.status==='done' && job.type==='translate') {
           const count = Number(job.result?.translatedRegions ?? 0);
@@ -321,6 +370,12 @@ export default function App() {
         }
         return;
       }
+      if (!blocksStudioShortcuts(event.target, event.isComposing) && activeView === 'workspace' && (event.key === 'Escape' || event.key === 'Enter') && !settings && !exportOpen && !textEditor && !regionGesture && qolActionsRef.current.reorderMode) {
+        event.preventDefault();
+        event.stopPropagation();
+        void qolActionsRef.current.finishReorderMode();
+        return;
+      }
       if (event.key === 'Escape' && !settings && !exportOpen && !textEditor && !regionGesture) {
         if (eyedropperActive) {
           event.preventDefault();
@@ -374,7 +429,12 @@ export default function App() {
       if (shortcut === 'manual') activateTool('manual');
       if (shortcut === 'text') activateTool('text');
       if (shortcut === 'pan') activateTool('pan');
-      if (shortcut === 'mask') activateTool('mask-add');
+      if (shortcut === 'mask') {
+        if (activeView === 'workspace' && qolActionsRef.current.canMerge && !busy && !running) void qolActionsRef.current.mergeSelectedBoxes();
+        else activateTool('mask-add');
+      }
+      if (shortcut === 'reorder' && activeView === 'workspace' && document && !busy && !running) void qolActionsRef.current.toggleReorderMode();
+      if (shortcut === 'split' && activeView === 'workspace' && document && !busy && !running && qolActionsRef.current.canSplit) void qolActionsRef.current.splitSelectedBox();
       if (shortcut === 'zoom' && document) viewport.zoomBy(1.2);
       if (shortcut === 'view' && document) viewport.toggleDual();
       if (shortcut === 'pan-hold' && !heldTool.current) { heldTool.current = tool; setTool('pan'); }
@@ -408,7 +468,7 @@ export default function App() {
     });
   };
 
-  const resetSelection = () => { setActiveLayer(null); setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); setManualRect(null); setNewDialogue(''); };
+  const resetSelection = () => { setActiveLayer(null); setSelected(new Set()); setSelectedTextIds(new Set()); setReorderMode(false); setReorderQueue([]); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); setManualRect(null); setNewDialogue(''); };
   const choose = () => { appendImport.current = false; fileInput.current?.click(); };
   const chooseFolder = () => { appendImport.current = false; folderInput.current?.click(); };
   const addPages = () => { appendImport.current = true; fileInput.current?.click(); };
@@ -825,6 +885,7 @@ export default function App() {
     setActiveLayer('bubble');
     setSelectedDialogueId(null); typography.select(null); setText(''); setNewDialogue(''); selectBubble(id, multi);
     const region = document?.textRegions.find(item => item.bubbleId === id);
+    if (!multi) setSelectedTextIds(region ? new Set([region.id]) : new Set());
     setActiveTextId(region?.id ?? null); setInspector(region ? 'Text' : 'Review');
     setDockTab('Script'); setRightCollapsed(false);
   };
@@ -832,9 +893,21 @@ export default function App() {
     setActiveLayer('source');
     const region = document?.textRegions.find(item => item.id === id);
     if (!region) return;
-    setSelectedDialogueId(null); typography.select(null); setActiveTextId(id); setSelected(new Set(region.bubbleId ? [region.bubbleId] : []));
+    setSelectedDialogueId(null); typography.select(null); setActiveTextId(id); setSelectedTextIds(new Set([id])); setSelected(new Set(region.bubbleId ? [region.bubbleId] : []));
     setPreview(null); setMaskUrl(null); setManualRect(null); setTool('select');
     setInspector('Text'); setDockTab('Script'); setRightCollapsed(false);
+  };
+  const selectTextMulti = (id: string, multi: boolean) => {
+    if (!multi) { selectTextRegion(id); return; }
+    setActiveLayer('source');
+    setSelectedDialogueId(null); typography.select(null);
+    setSelectedTextIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    setActiveTextId(id);
+    setPreview(null); setMaskUrl(null);
   };
   const selectDialogue = (id: string) => {
     setActiveLayer('dialogue');
@@ -949,6 +1022,252 @@ export default function App() {
 
   const currentBubbleNumber = active && document ? document.bubbles.indexOf(active) + 1 : null;
   const currentBubbleStatus = active ? bubbleStatuses[active.id] ?? 'raw' : null;
+  const overflowIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!document?.dialogues?.length) return ids;
+    const bubbleById = new Map(document.bubbles.map(b => [b.id, b]));
+    const regionById = new Map(document.textRegions.map(r => [r.id, r]));
+    for (const rawDlg of document.dialogues) {
+      const d = typographyLive.drafts[rawDlg.id] ?? rawDlg;
+      if (!d.visible || !d.text.trim()) continue;
+      const parentBubble = d.bubble_id ? bubbleById.get(d.bubble_id) : undefined;
+      const parentRegion = d.source_region_id ? regionById.get(d.source_region_id) : undefined;
+      const boxW = parentBubble ? parentBubble.rect[2] : parentRegion ? parentRegion.rect[2] : d.width;
+      const boxH = parentBubble ? parentBubble.rect[3] : parentRegion ? parentRegion.rect[3] : d.height;
+      if (evaluateDialogueOverflow(d, boxW, boxH).isOverflowing) {
+        if (d.bubble_id) ids.add(d.bubble_id);
+        if (d.source_region_id) ids.add(d.source_region_id);
+        ids.add(d.id);
+      }
+    }
+    return ids;
+  }, [document, typographyLive.drafts]);
+
+  const activeOrderIds = useMemo(() => {
+    if (!document) return [] as string[];
+    if (detectionMode === 'text') {
+      const visibleSet = new Set(
+        document.textRegions
+          .filter(r => r.origin === 'automatic_text_detection' || r.origin === 'manual')
+          .map(r => r.id),
+      );
+      const ordered = (document.readingOrder ?? []).filter(id => visibleSet.has(id));
+      for (const id of visibleSet) if (!ordered.includes(id)) ordered.push(id);
+      return ordered.length ? ordered : document.textRegions.map(r => r.id);
+    }
+    return document.bubbles.filter(b => !b.excluded).map(b => b.id);
+  }, [document, detectionMode]);
+
+  const readingOrderMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    const order = document?.readingOrder ?? [];
+    order.forEach((id, idx) => { map[id] = idx + 1; });
+    return map;
+  }, [document?.readingOrder]);
+
+  const reorderOrderMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    reorderQueue.forEach((id, idx) => { map[id] = idx + 1; });
+    return map;
+  }, [reorderQueue]);
+
+  useEffect(() => {
+    setReorderMode(false);
+    setReorderQueue([]);
+  }, [document?.pageId, detectionMode]);
+
+  const selectedBoxBounds = useMemo<[number, number] | null>(() => {
+    if (!activeDialogue || !document) return null;
+    const bubble = activeDialogue.bubble_id ? document.bubbles.find(b => b.id === activeDialogue.bubble_id) : undefined;
+    if (bubble) return [bubble.rect[2], bubble.rect[3]];
+    const region = activeDialogue.source_region_id ? document.textRegions.find(r => r.id === activeDialogue.source_region_id) : undefined;
+    if (region) return [region.rect[2], region.rect[3]];
+    return [activeDialogue.width, activeDialogue.height];
+  }, [activeDialogue, document]);
+
+  const canMergeBoxes = detectionMode === 'text' ? selectedTextIds.size >= 2 : selected.size >= 2;
+  const canSplitBox = detectionMode === 'text' ? (selectedTextIds.size === 1 || (selectedTextIds.size === 0 && Boolean(activeTextId))) : selected.size === 1;
+
+  const commitReorder = async (queue: string[]) => {
+    setReorderMode(false);
+    setReorderQueue([]);
+    if (!api || !document || queue.length === 0) return;
+    await action(async () => {
+      await flushEdits();
+      if (detectionMode === 'text') {
+        const allIds = document.readingOrder?.length ? document.readingOrder : document.textRegions.map(r => r.id);
+        const remaining = allIds.filter(id => !queue.includes(id));
+        const next = await api.post<State>('/v1/reading-order', { ids: [...queue, ...remaining] });
+        setState(next);
+      } else {
+        const allIds = document.bubbles.map(b => b.id);
+        const remaining = allIds.filter(id => !queue.includes(id));
+        const next = await api.post<State>('/v1/bubbles/reorder', { pageId: document.pageId, ids: [...queue, ...remaining] });
+        setState(next);
+      }
+      setSaveNotice('Reading order updated.');
+    });
+  };
+
+  const finishReorderMode = async () => { await commitReorder(reorderQueue); };
+
+  const toggleReorderMode = async () => {
+    if (reorderMode) { await finishReorderMode(); return; }
+    if (!document || !activeOrderIds.length) return;
+    setTool('select');
+    setReorderQueue([]);
+    setReorderMode(true);
+  };
+
+  const handleReorderClick = (id: string) => {
+    const existingIdx = reorderQueue.indexOf(id);
+    if (existingIdx >= 0) {
+      setReorderQueue(reorderQueue.slice(0, existingIdx));
+      return;
+    }
+    const nextQueue = [...reorderQueue, id];
+    if (activeOrderIds.length > 0 && nextQueue.length >= activeOrderIds.length) {
+      void commitReorder(nextQueue);
+    } else {
+      setReorderQueue(nextQueue);
+    }
+  };
+
+  const sortRtlNow = async () => {
+    if (!api || !document) return;
+    setReorderMode(false);
+    setReorderQueue([]);
+    await action(async () => {
+      await flushEdits();
+      const route = detectionMode === 'text' ? '/v1/text-regions/sort-rtl' : '/v1/bubbles/sort-rtl';
+      const next = await api.post<State>(route, { pageId: document.pageId });
+      setState(next);
+      setSaveNotice('Bounding boxes sorted into Manga RTL reading order.');
+    });
+  };
+
+  const mergeSelectedBoxes = async () => {
+    if (!api || !document) return;
+    const ids = detectionMode === 'text' ? [...selectedTextIds] : [...selected];
+    if (ids.length < 2) return;
+    await action(async () => {
+      await flushEdits();
+      const route = detectionMode === 'text' ? '/v1/text-regions/merge' : '/v1/bubbles/merge';
+      const res = await api.post<State & { mergedId: string }>(route, { pageId: document.pageId, ids });
+      setState(res);
+      await applyAutoFitBatch(api, setState);
+      if (detectionMode === 'text') {
+        setSelectedTextIds(new Set([res.mergedId]));
+        setActiveTextId(res.mergedId);
+        const linkedDlg = res.document?.dialogues.find(d => d.source_region_id === res.mergedId);
+        setSelectedDialogueId(linkedDlg?.id ?? null);
+        typography.select(linkedDlg?.id ?? null);
+      } else {
+        setSelected(new Set([res.mergedId]));
+        const region = res.document?.textRegions.find(r => r.bubbleId === res.mergedId);
+        setActiveTextId(region?.id ?? null);
+        setSelectedTextIds(region ? new Set([region.id]) : new Set());
+        const linkedDlg = res.document?.dialogues.find(d => d.bubble_id === res.mergedId || (region && d.source_region_id === region.id));
+        setSelectedDialogueId(linkedDlg?.id ?? null);
+        typography.select(linkedDlg?.id ?? null);
+      }
+      setSaveNotice('Merged selected boxes cleanly.');
+    });
+  };
+
+  const splitSelectedBox = async () => {
+    if (!api || !document) return;
+    const targetId = detectionMode === 'text'
+      ? (selectedTextIds.size === 1 ? [...selectedTextIds][0] : activeTextId)
+      : (selected.size === 1 ? [...selected][0] : null);
+    if (!targetId) return;
+    await action(async () => {
+      await flushEdits();
+      const route = detectionMode === 'text' ? '/v1/text-regions/split' : '/v1/bubbles/split';
+      const res = await api.post<State & { splitIds: string[]; focusId: string }>(route, { pageId: document.pageId, id: targetId });
+      setState(res);
+      await applyAutoFitBatch(api, setState);
+      const focusId = res.focusId || res.splitIds?.[1] || res.splitIds?.[0];
+      if (focusId) {
+        if (detectionMode === 'text') {
+          setSelectedTextIds(new Set([focusId]));
+          setActiveTextId(focusId);
+          setActiveLayer('source');
+          const linkedDlg = res.document?.dialogues.find(d => d.source_region_id === focusId);
+          setSelectedDialogueId(linkedDlg?.id ?? null);
+          typography.select(linkedDlg?.id ?? null);
+        } else {
+          setSelected(new Set([focusId]));
+          setActiveLayer('bubble');
+          const region = res.document?.textRegions.find(r => r.bubbleId === focusId);
+          setActiveTextId(region?.id ?? null);
+          setSelectedTextIds(region ? new Set([region.id]) : new Set());
+          const linkedDlg = res.document?.dialogues.find(d => d.bubble_id === focusId || (region && d.source_region_id === region.id));
+          setSelectedDialogueId(linkedDlg?.id ?? null);
+          typography.select(linkedDlg?.id ?? null);
+        }
+        setInspector('Text');
+        setDockTab('Script');
+        setRightCollapsed(false);
+        requestAnimationFrame(() => window.document.getElementById('typography-text')?.focus());
+      }
+      setSaveNotice('Split bounding box into two regions.');
+    });
+  };
+
+  const expandSelectedBox = async () => {
+    if (!api || !document) return;
+    const bubbleTarget = activeDialogue?.bubble_id ?? (detectionMode === 'bubble' && selected.size === 1 ? [...selected][0] : null);
+    const regionTarget = activeDialogue?.source_region_id ?? (activeText?.id ?? null);
+    if (!bubbleTarget && !regionTarget) return;
+    setExpandBusy(true);
+    try {
+      await action(async () => {
+        await flushEdits();
+        const route = bubbleTarget ? `/v1/bubbles/${bubbleTarget}/expand` : `/v1/text-regions/${regionTarget}/expand`;
+        const next = await api.post<State>(route, { pageId: document.pageId, paddingRatio: 0.15 });
+        setState(next);
+        await applyAutoFitBatch(api, setState);
+        setSaveNotice('Expanded bounding box by 15% and refitted font.');
+      });
+    } finally {
+      setExpandBusy(false);
+    }
+  };
+
+  qolActionsRef.current = {
+    reorderMode,
+    canMerge: canMergeBoxes,
+    canSplit: canSplitBox,
+    toggleReorderMode,
+    finishReorderMode,
+    mergeSelectedBoxes,
+    splitSelectedBox,
+  };
+
+  const boxOpsNode = (
+    <div className="canvas-box-ops" role="group" aria-label="Reading order and box actions">
+      <button type="button" disabled={!api || busy || running || activeOrderIds.length < 2} onClick={() => void sortRtlNow()} title="Sort boxes into Manga RTL reading order"><ArrowUpDown size={12} /> Sort RTL</button>
+      <button type="button" aria-pressed={reorderMode} disabled={!api || busy || running || activeOrderIds.length === 0} onClick={() => void toggleReorderMode()} title="Click boxes interactively in reading order (O)"><ListOrdered size={12} /> # Reorder (O)</button>
+      <button type="button" disabled={!api || busy || running || !canMergeBoxes} onClick={() => void mergeSelectedBoxes()} title="Merge selected boxes (M)"><Combine size={12} /> Merge (M)</button>
+      <button type="button" disabled={!api || busy || running || !canSplitBox} onClick={() => void splitSelectedBox()} title="Split selected box in two (S)"><Scissors size={12} /> Split (S)</button>
+    </div>
+  );
+
+  const qolContextValue = {
+    reorderMode,
+    reorderOrder: reorderOrderMap,
+    reorderNextNumber: reorderQueue.length + 1,
+    reorderTotal: activeOrderIds.length,
+    readingOrderMap,
+    onReorderClick: handleReorderClick,
+    onFinishReorder: () => { void finishReorderMode(); },
+    overflowIds,
+    selectedTextIds,
+    onTextMultiSelect: selectTextMulti,
+    boxOpsNode,
+  };
+
   const bubbleHeaderNode = active && currentBubbleNumber !== null ? (
     <div className="bubble-header-bar">
       <span className="bubble-header-badge">#{String(currentBubbleNumber).padStart(2, '0')}</span>
@@ -956,6 +1275,7 @@ export default function App() {
       <div className="bubble-header-nav">
         <button type="button" aria-label="Previous bubble (Shift+Tab)" title="Previous bubble (Shift+Tab)" onClick={() => cycleBubble(-1)}>‹</button>
         <button type="button" aria-label="Next bubble (Tab)" title="Next bubble (Tab)" onClick={() => cycleBubble(1)}>›</button>
+        <button type="button" aria-label="Sort RTL reading order" title="Sort bounding boxes into Manga RTL reading order" disabled={!api || busy || running || activeOrderIds.length < 2} onClick={() => void sortRtlNow()}>⇅</button>
       </div>
     </div>
   ) : null;
@@ -1109,7 +1429,7 @@ export default function App() {
       <div className="canvas-column">
         {saveNotice && <div className="save-notice" role="status">{saveNotice}</div>}
         {error && <div className="error-banner" role="alert"><CircleHelp size={17} /><div><span>{error}</span>{exportIssues && <><p>Halaman {exportIssues.pageNumber}: {exportIssues.pageName}. Proyek tetap dapat disimpan.</p><ul style={{ maxHeight: 160, overflowY: 'auto' }}>{exportIssues.issues.map(issue => <li key={issue.dialogueId}><strong>{issue.dialogueLabel}</strong> · {issue.candidateNumber ? `Candidate ${String(issue.candidateNumber).padStart(2, '0')}` : 'Tanpa kandidat terhubung'}<br />{issue.reason}<br />Requested: {issue.requestedFamily} / {issue.requestedWeight} / {issue.requestedSize}px · Actual: {issue.resolvedFamily ?? 'tidak tersedia'} / {issue.resolvedWeight ?? '—'} / {issue.resolvedSize ?? '—'}px<br /><small>Dialogue ID: {issue.dialogueId} · Bubble ID: {issue.bubbleId ?? '—'}</small><br /><button disabled={busy || running || document?.pageId !== exportIssues.pageId || !document?.dialogues.some(text => text.id === issue.dialogueId)} onClick={() => { const text = document?.dialogues.find(text => text.id === issue.dialogueId); if (!text || document?.pageId !== exportIssues.pageId) return; selectDialogue(text.id); setShowTypography(true); setShowSelection(true); viewport.update({ pan: { x: text.x + text.width / 2 - document.width / 2, y: text.y + text.height / 2 - document.height / 2 } }); }}>Pilih dan perbaiki Dialogue</button></li>)}</ul></>}</div>{!api && !exportIssues && <button disabled={busy} onClick={reconnect}>Reconnect</button>}<button aria-label="Dismiss error" onClick={() => { setError(''); setExportIssues(null); }}><X size={16} /></button></div>}
-        {document ? <CanvasWorkspace bubbleStatuses={bubbleStatuses} detectionMode={detectionMode} showRulers={showRulers} activeLayer={cachedPreview ? null : activeLayer} typography={{ session: typography, dialogues: cachedPreview ? [] : document.dialogues ?? [], selected: selectedDialogueId, visible: !cachedPreview && showTypography, coverText: composition.text_mode === 'overlay', onSelect: selectDialogue, onEdit: selectDialogue }} interaction={interaction} editable={Boolean(api) && !pendingPageId && !busy && !running && !textEditor} showRegions={showRegions} showSelection={!cachedPreview && showSelection} onEditText={editTextRegion} onDeselect={() => { setActiveLayer(null);setSelected(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); }} onCommitBubble={commitBubbleRect} onCommitRegion={commitRegionRect} onGesture={value => { setRegionGesture(value); if (value) { setSaveNotice(''); setPreview(null); setMaskUrl(null); } }} controller={viewport} original={cachedPreview?.original ?? original} working={cachedPreview?.working ?? working} containers={containers} mask={cachedPreview ? null : mask} width={cachedPreview ? pendingPage!.width : document.width} height={cachedPreview ? pendingPage!.height : document.height} name={cachedPreview ? pendingPage!.name : document.sourceName} bubbles={cachedPreview ? (cachedPreview.bubbles ?? []) : document.bubbles.filter(bubble=>!bubble.excluded)} textRegions={cachedPreview ? cachedPreview.textRegions ?? [] : document.textRegions} selected={cachedPreview ? emptySelection : selected} selectedTextId={cachedPreview ? null : activeTextId} tool={pendingPageId ? 'select' : tool} brushRadius={brushRadius} showBoxes={showBoxes} showMask={!cachedPreview && showMask} showOriginal={showOriginal} showWorking={showWorking} layerOpacity={layerOpacity} eyedropperActive={eyedropperActive} pureColor={pureColor} onBrushRadiusChange={setBrushRadius} onSampleColor={rgb => { setPureColor(rgb); setEyedropperActive(false); setHealingMode('pure-paint'); setTool('heal-pure'); }} onBubble={selectFromScript} onRect={handleRectComplete} onBrush={editMask} onText={selectTextRegion} /> : <div className="empty-workspace"><div className="empty-content"><div className="empty-icon"><MangaCleanLogo size={32} /></div><h1>Open a page to get started</h1><p>Press Ctrl+O, or choose a chapter folder.</p><div className="empty-actions"><button className="text-command primary large" onClick={choose}><FolderOpen size={18} /> Open Image or Project</button><button className="text-command large" onClick={chooseFolder}>Open Chapter Folder</button></div><span className="empty-hint">PNG, JPEG, or .mangaclean · Processing stays on this computer</span></div></div>}
+        {document ? <QolCanvasContext.Provider value={qolContextValue}><CanvasWorkspace bubbleStatuses={bubbleStatuses} detectionMode={detectionMode} showRulers={showRulers} activeLayer={cachedPreview ? null : activeLayer} typography={{ session: typography, dialogues: cachedPreview ? [] : document.dialogues ?? [], selected: selectedDialogueId, visible: !cachedPreview && showTypography, coverText: composition.text_mode === 'overlay', onSelect: selectDialogue, onEdit: selectDialogue }} interaction={interaction} editable={Boolean(api) && !pendingPageId && !busy && !running && !textEditor} showRegions={showRegions} showSelection={!cachedPreview && showSelection} onEditText={editTextRegion} onDeselect={() => { setActiveLayer(null);setSelected(new Set()); setSelectedTextIds(new Set()); setActiveTextId(null); setSelectedDialogueId(null); typography.select(null); setPreview(null); setMaskUrl(null); }} onCommitBubble={commitBubbleRect} onCommitRegion={commitRegionRect} onGesture={value => { setRegionGesture(value); if (value) { setSaveNotice(''); setPreview(null); setMaskUrl(null); } }} controller={viewport} original={cachedPreview?.original ?? original} working={cachedPreview?.working ?? working} containers={containers} mask={cachedPreview ? null : mask} width={cachedPreview ? pendingPage!.width : document.width} height={cachedPreview ? pendingPage!.height : document.height} name={cachedPreview ? pendingPage!.name : document.sourceName} bubbles={cachedPreview ? (cachedPreview.bubbles ?? []) : document.bubbles.filter(bubble=>!bubble.excluded)} textRegions={cachedPreview ? cachedPreview.textRegions ?? [] : document.textRegions} selected={cachedPreview ? emptySelection : selected} selectedTextId={cachedPreview ? null : activeTextId} tool={pendingPageId ? 'select' : tool} brushRadius={brushRadius} showBoxes={showBoxes} showMask={!cachedPreview && showMask} showOriginal={showOriginal} showWorking={showWorking} layerOpacity={layerOpacity} eyedropperActive={eyedropperActive} pureColor={pureColor} onBrushRadiusChange={setBrushRadius} onSampleColor={rgb => { setPureColor(rgb); setEyedropperActive(false); setHealingMode('pure-paint'); setTool('heal-pure'); }} onBubble={selectFromScript} onRect={handleRectComplete} onBrush={editMask} onText={selectTextRegion} /></QolCanvasContext.Provider> : <div className="empty-workspace"><div className="empty-content"><div className="empty-icon"><MangaCleanLogo size={32} /></div><h1>Open a page to get started</h1><p>Press Ctrl+O, or choose a chapter folder.</p><div className="empty-actions"><button className="text-command primary large" onClick={choose}><FolderOpen size={18} /> Open Image or Project</button><button className="text-command large" onClick={chooseFolder}>Open Chapter Folder</button></div><span className="empty-hint">PNG, JPEG, or .mangaclean · Processing stays on this computer</span></div></div>}
       </div>
       {document && !rightCollapsed && <div className="right-dock-container" inert={Boolean(pendingPageId)} style={{ width: rightWidth }}><InspectorDock cardTypography={bubble => <TypographyCardControls session={typography} dialogues={document?.dialogues ?? []} bubbleId={bubble.id} selected={selectedDialogueId} disabled={!api || !document || busy || running || regionGesture || Boolean(textEditor)} onTarget={id => { setSelectedDialogueId(id); typography.select(id); setActiveTextId(null); }} />} document={document} selected={selected} onSelect={selectFromScript} tab={dockTab} onTab={setDockTab} onCollapse={() => setRightCollapsed(true)} layerControls={<LayersPanel
         composition={composition}
@@ -1189,7 +1509,7 @@ export default function App() {
             {tool === 'manual' && manualRect && <button disabled={!api || busy || jobActive} onClick={addManualBubble}>Add manual bubble region</button>}
             {active?.manualRegion && <button disabled={!api || busy || jobActive || active.hasAppliedMask} title={active.hasAppliedMask ? 'Undo cleaning before deleting this region' : 'Keep linked text and artwork'} onClick={deleteManualBubble}>Delete manual bubble region</button>}
             {document && <>{linkedDialogues.length > 1 && <TypographyLayerList session={typography} dialogues={linkedDialogues} selected={activeDialogue?.id ?? null} onSelect={selectDialogue} />}
-              <TypographyControls api={api} session={typography} selected={activeDialogue} disabled={!api || busy || running || regionGesture} onCreate={() => createDialogue()} onDelete={deleteDialogue} bubbleHeader={bubbleHeaderNode} onApprove={approveAndAdvance} sourceControls={<>
+              <TypographyControls api={api} session={typography} selected={activeDialogue} disabled={!api || busy || running || regionGesture} onCreate={() => createDialogue()} onDelete={deleteDialogue} bubbleHeader={bubbleHeaderNode} onApprove={approveAndAdvance} boxBounds={selectedBoxBounds} onExpandBox={() => void expandSelectedBox()} expandBusy={expandBusy} sourceControls={<>
               <div className="source-field-container"><label htmlFor="source-ocr-text">Original (Source)</label><textarea id="source-ocr-text" aria-label="Source transcription" value={activeText ? manualDraft : text} onFocus={()=>{sourceFocused.current=true;}} onBlur={()=>{sourceFocused.current=false;saveSource();}} onChange={event => { unapproveActiveBubble(); if (activeText) setManualDraft(event.target.value); else setText(event.target.value); }} disabled={busy || running} placeholder="Original transcription..." /></div>
               {!activeDialogue && <div className="translation-field-container"><div className="field-header-row"><label htmlFor="typography-text">Translation</label><span className="char-counter">{newDialogue.length} chars</span></div><textarea id="typography-text" aria-label="New Indonesian dialogue" value={newDialogue} onChange={event=>{ unapproveActiveBubble(); setNewDialogue(event.target.value); }} onBlur={()=>{if(newDialogue.trim())createDialogue(undefined,newDialogue);}} disabled={busy || running} placeholder="Enter Indonesian dialogue..."/></div>}
               </>} sourceOptions={<>

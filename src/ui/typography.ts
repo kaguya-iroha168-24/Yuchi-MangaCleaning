@@ -5,6 +5,185 @@ type TypographyStyle = Pick<Dialogue, 'family' | 'weight' | 'size' | 'minimum_si
 type Snapshot = { drafts: Record<string, Dialogue>; layers: Record<string, TypographyRender>; errors: Record<string, string>; loading: Record<string, boolean>; copiedStyle: TypographyStyle | null };
 export const dialogueFields = ({ id: _id, locked: _locked, ...fields }: Dialogue) => fields;
 export const fontSizePatch = (text: Dialogue, size: number) => ({ size: Math.max(8, Math.min(144, Math.round(size))), minimum_size: Math.min(Math.max(8, Math.round(size)), text.minimum_size) });
+export const manualFontSizePatch = (text: Pick<Dialogue, 'minimum_size'>, size: number) => ({ ...fontSizePatch(text as Dialogue, size), auto_fit: false });
+export const autoFitFontSizePatch = (text: Pick<Dialogue, 'minimum_size'>, size: number) => ({ ...fontSizePatch(text as Dialogue, size), auto_fit: true });
+
+export interface AutoFitInput {
+  text: string;
+  boxWidth: number;
+  boxHeight: number;
+  fontFamily?: string;
+  fontWeight?: number | string;
+  italic?: boolean;
+  lineHeight?: number;
+  letterSpacing?: number;
+  minFontSize?: number;
+  maxFontSize?: number;
+  measureTextWidth?: (text: string, font: string, fontSize: number) => number;
+}
+
+export interface AutoFitResult {
+  fontSize: number;
+  lines: string[];
+  isOverflowing: boolean;
+  totalTextHeight: number;
+  maxWordWidth: number;
+}
+
+let measureCanvasContext: CanvasRenderingContext2D | null | undefined;
+function getMeasureContext(): CanvasRenderingContext2D | null {
+  if (measureCanvasContext !== undefined) return measureCanvasContext;
+  if (typeof document === 'undefined') { measureCanvasContext = null; return null; }
+  const canvas = document.createElement('canvas');
+  measureCanvasContext = canvas.getContext('2d');
+  return measureCanvasContext;
+}
+
+function measureRunWidth(
+  value: string,
+  font: string,
+  fontSize: number,
+  letterSpacing: number,
+  customMeasure?: (text: string, font: string, fontSize: number) => number,
+): number {
+  if (!value) return 0;
+  let baseWidth = 0;
+  if (customMeasure) {
+    baseWidth = customMeasure(value, font, fontSize);
+  } else {
+    const ctx = getMeasureContext();
+    if (ctx) {
+      ctx.font = font;
+      baseWidth = ctx.measureText(value).width;
+    } else {
+      // Deterministic metric fallback only in headless non-DOM test environments
+      baseWidth = value.length * fontSize * 0.56;
+    }
+  }
+  const spacing = value.length > 1 ? (value.length - 1) * letterSpacing : 0;
+  return Math.max(0, baseWidth + spacing);
+}
+
+function measureLayoutAtSize(input: AutoFitInput, fontSize: number, wrapWidth: number): { lines: string[]; totalTextHeight: number; maxWordWidth: number } {
+  const family = (input.fontFamily || 'Komika Text Kaps').trim();
+  const quotedFamily = /[\s,]/.test(family) && !/^["']/.test(family) ? `"${family}"` : family;
+  const weight = input.fontWeight ?? 700;
+  const italic = input.italic ? 'italic ' : '';
+  const font = `${italic}${weight} ${fontSize}px ${quotedFamily}`;
+  const lineHeight = input.lineHeight && input.lineHeight > 0.4 ? input.lineHeight : 1.15;
+  const letterSpacing = input.letterSpacing ?? 0;
+
+  const trimmed = (input.text || '').replace(/\r\n/g, '\n');
+  if (!trimmed.trim()) return { lines: [], totalTextHeight: 0, maxWordWidth: 0 };
+
+  const paragraphs = trimmed.split('\n');
+  const lines: string[] = [];
+  let maxWordWidth = 0;
+
+  for (const para of paragraphs) {
+    const words = para.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      lines.push('');
+      continue;
+    }
+    let currentLine = '';
+    for (const word of words) {
+      const wordW = measureRunWidth(word, font, fontSize, letterSpacing, input.measureTextWidth);
+      if (wordW > maxWordWidth) maxWordWidth = wordW;
+      if (!currentLine) {
+        currentLine = word;
+      } else {
+        const candidate = `${currentLine} ${word}`;
+        const candW = measureRunWidth(candidate, font, fontSize, letterSpacing, input.measureTextWidth);
+        if (candW <= wrapWidth) {
+          currentLine = candidate;
+        } else {
+          lines.push(currentLine);
+          currentLine = word;
+        }
+      }
+    }
+    if (currentLine) lines.push(currentLine);
+  }
+
+  return {
+    lines,
+    totalTextHeight: lines.length * fontSize * lineHeight,
+    maxWordWidth,
+  };
+}
+
+export function computeAutoFitFontSize(input: AutoFitInput): AutoFitResult {
+  const minSize = Math.max(8, Math.round(input.minFontSize ?? 11));
+  const maxSize = Math.max(minSize, Math.round(input.maxFontSize ?? 32));
+  const boxW = Math.max(8, input.boxWidth);
+  const boxH = Math.max(8, input.boxHeight);
+  const safeWidth = boxW * 0.86;
+  const safeHeight = boxH * 0.86;
+  const overflowWidth = boxW * 0.92;
+  const overflowHeight = boxH * 0.92;
+
+  if (!input.text || !input.text.trim()) {
+    return { fontSize: maxSize, lines: [], isOverflowing: false, totalTextHeight: 0, maxWordWidth: 0 };
+  }
+
+  let low = minSize;
+  let high = maxSize;
+  let best = minSize;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const measured = measureLayoutAtSize(input, mid, safeWidth);
+    const fits = measured.maxWordWidth <= safeWidth && measured.totalTextHeight <= safeHeight;
+    if (fits) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  const finalMetrics = measureLayoutAtSize(input, best, safeWidth);
+  const isOverflowing = finalMetrics.totalTextHeight > overflowHeight || finalMetrics.maxWordWidth > overflowWidth;
+  return {
+    fontSize: best,
+    lines: finalMetrics.lines,
+    isOverflowing,
+    totalTextHeight: finalMetrics.totalTextHeight,
+    maxWordWidth: finalMetrics.maxWordWidth,
+  };
+}
+
+export function evaluateDialogueOverflow(dialogue: Pick<Dialogue, 'text' | 'width' | 'height' | 'family' | 'weight' | 'size' | 'auto_fit' | 'style'>, boxWidth?: number, boxHeight?: number, measureTextWidth?: AutoFitInput['measureTextWidth']): AutoFitResult {
+  const w = Math.max(8, boxWidth ?? dialogue.width);
+  const h = Math.max(8, boxHeight ?? dialogue.height);
+  if (!dialogue.text || !dialogue.text.trim()) {
+    return { fontSize: dialogue.size, lines: [], isOverflowing: false, totalTextHeight: 0, maxWordWidth: 0 };
+  }
+  const baseInput: AutoFitInput = {
+    text: dialogue.text,
+    boxWidth: w,
+    boxHeight: h,
+    fontFamily: dialogue.family,
+    fontWeight: dialogue.weight,
+    italic: Boolean(dialogue.style?.italic),
+    lineHeight: dialogue.style?.line_height ?? 1.15,
+    letterSpacing: dialogue.style?.letter_spacing ?? 0,
+    measureTextWidth,
+  };
+  if (dialogue.auto_fit) {
+    return computeAutoFitFontSize(baseInput);
+  }
+  const lockedSize = Math.max(8, dialogue.size);
+  const metrics = measureLayoutAtSize(baseInput, lockedSize, w * 0.86);
+  return {
+    fontSize: lockedSize,
+    lines: metrics.lines,
+    isOverflowing: metrics.totalTextHeight > h * 0.92 || metrics.maxWordWidth > w * 0.92,
+    totalTextHeight: metrics.totalTextHeight,
+    maxWordWidth: metrics.maxWordWidth,
+  };
+}
 export function readSizePresets(serialized: string | null): (number | null)[] {
   let values: unknown;
   try { values = serialized === null ? null : JSON.parse(serialized); } catch { values = null; }

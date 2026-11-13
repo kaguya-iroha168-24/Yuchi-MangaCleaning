@@ -33,6 +33,17 @@ from mangaclean.core.composition import page_composition
 from mangaclean.core.ocr_result import update_source_region
 from mangaclean.core.text_cleaning import AUTO, TELEA, WHITE, NS, restore_text, selection_mask, CleanResult, synthesize_texture_block
 from mangaclean.services.bubble_geometry import reframe_bubble
+from mangaclean.services.manga_order import (
+    _align_dialogues_order,
+    expand_bubble_in_doc,
+    expand_text_region_in_doc,
+    merge_bubbles_in_doc,
+    merge_text_regions_in_doc,
+    sort_document_rtl,
+    sort_items_manga_rtl,
+    split_bubble_in_doc,
+    split_text_region_in_doc,
+)
 from mangaclean.services.cleaning_pipeline import automatic_clean_safety, execute, prepare_bubble, prepare_text_selection
 from mangaclean.services.detection import OPENCV, SHIMA, detect
 from mangaclean.services.detection_runtime import DetectionCancelled, detect_with_fallback
@@ -380,7 +391,7 @@ def run_detect(job_id: str, revision: int, source: np.ndarray, working: np.ndarr
                 return
             store.capture()
             doc = store.require()
-            doc.bubbles = batch.bubbles
+            doc.bubbles = sort_items_manga_rtl(batch.bubbles, lambda b: b.rect)
             doc.mask = np.zeros(source.shape[:2], np.uint8)
             doc.manual_mask = None
             doc.detection_runs.append(batch.metadata)
@@ -589,6 +600,240 @@ def edit_bubble_geometry(identifier: str, payload: BubbleGeometryRequest, reques
         store.capture(('bubbles','region_graph'))
         doc.bubbles=bubbles;doc.region_graph=graph
         doc.revision+=1;doc.dirty=True;store.preview=None
+        return public_state()
+
+
+class BoxListRequest(ActivePageRequest):
+    ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+class BoxSplitRequest(ActivePageRequest):
+    id: str
+
+
+class BoxExpandRequest(ActivePageRequest):
+    paddingRatio: float = Field(default=0.15, ge=0.05, le=0.5)
+
+
+class DialogueAutoFitItem(BaseModel):
+    id: str
+    size: int = Field(ge=8, le=144)
+    minimum_size: int = Field(ge=8, le=48)
+
+
+class DialogueAutoFitBatchRequest(ActivePageRequest):
+    updates: list[DialogueAutoFitItem] = Field(default_factory=list, max_length=200)
+
+
+@app.post('/v1/bubbles/sort-rtl')
+def sort_bubbles_rtl_route(payload: ActivePageRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before sorting reading order.')
+        store.capture(('bubbles', 'region_graph', 'dialogues', 'active_text_id'))
+        sort_document_rtl(doc, sort_text_regions_list=True, align_dialogues=True)
+        doc.revision += 1; doc.dirty = True; store.preview = None
+        return public_state()
+
+
+@app.post('/v1/bubbles/reorder')
+def reorder_bubbles_route(payload: BoxListRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before saving reading order.')
+        bubble_map = {b.id: b for b in doc.bubbles}
+        if len(payload.ids) != len(bubble_map) or len(set(payload.ids)) != len(bubble_map) or set(payload.ids) != set(bubble_map):
+            raise HTTPException(422, 'Reading order must contain every bubble on the page exactly once.')
+        store.capture(('bubbles', 'region_graph', 'dialogues', 'active_text_id'))
+        doc.bubbles = [bubble_map[bid] for bid in payload.ids]
+        bubble_rank = {bid: idx for idx, bid in enumerate(payload.ids)}
+        graph = deepcopy(doc.region_graph)
+        if graph.text_regions:
+            linked_rank = lambda r: (0, bubble_rank[r.bubble_id]) if r.bubble_id in bubble_rank else (1, 0)
+            regions_sorted = sorted(graph.text_regions, key=lambda r: (*linked_rank(r), r.rect[1], -r.rect[0]))
+            graph.text_regions = regions_sorted
+            graph.reading_order = [r.id for r in regions_sorted]
+            graph.validate(doc.source.shape, doc.bubbles)
+            doc.region_graph = graph
+        _align_dialogues_order(doc)
+        doc.revision += 1; doc.dirty = True; store.preview = None
+        return public_state()
+
+
+def _rollback_snapshot(doc: Document, snapshot: dict) -> None:
+    for key, value in snapshot.items():
+        setattr(doc, key, value)
+
+
+@app.post('/v1/bubbles/merge')
+def merge_bubbles_route(payload: BoxListRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before merging bubbles.')
+        snapshot = store.frame(('bubbles', 'region_graph', 'dialogues', 'mask', 'working', 'active_text_id'))
+        try:
+            merged_id = merge_bubbles_in_doc(doc, payload.ids)
+        except PermissionError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(409, str(error)) from error
+        except ValueError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(422, str(error)) from error
+        store.undo.append(snapshot); store.redo.clear()
+        doc.revision += 1; doc.dirty = True; store.preview = None
+        return dict(public_state(), mergedId=merged_id)
+
+
+@app.post('/v1/bubbles/split')
+def split_bubble_route(payload: BoxSplitRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before splitting bubble.')
+        bubble = bubble_by_id(payload.id)
+        snapshot = store.frame(('bubbles', 'region_graph', 'dialogues', 'mask', 'working', 'active_text_id'))
+        try:
+            id1, id2, focus_id = split_bubble_in_doc(doc, bubble)
+        except PermissionError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(409, str(error)) from error
+        except ValueError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(422, str(error)) from error
+        store.undo.append(snapshot); store.redo.clear()
+        doc.revision += 1; doc.dirty = True; store.preview = None
+        return dict(public_state(), splitIds=[id1, id2], focusId=focus_id)
+
+
+@app.post('/v1/bubbles/{identifier}/expand')
+def expand_bubble_route(identifier: str, payload: BoxExpandRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before expanding bubble.')
+        bubble = bubble_by_id(identifier)
+        snapshot = store.frame(('bubbles', 'region_graph', 'dialogues'))
+        try:
+            new_rect, _ = expand_bubble_in_doc(doc, bubble, payload.paddingRatio)
+        except ValueError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(422, str(error)) from error
+        store.undo.append(snapshot); store.redo.clear()
+        doc.revision += 1; doc.dirty = True; store.preview = None
+        return dict(public_state(), rect=list(new_rect))
+
+
+@app.post('/v1/text-regions/sort-rtl')
+def sort_text_regions_rtl_route(payload: ActivePageRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before sorting text reading order.')
+        store.capture(('bubbles', 'region_graph', 'dialogues', 'active_text_id'))
+        sort_document_rtl(doc, sort_text_regions_list=True, align_dialogues=True)
+        doc.revision += 1; doc.dirty = True; store.preview = None
+        return public_state()
+
+
+@app.post('/v1/text-regions/merge')
+def merge_text_regions_route(payload: BoxListRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before merging text regions.')
+        snapshot = store.frame(('region_graph', 'dialogues', 'active_text_id'))
+        try:
+            merged_id = merge_text_regions_in_doc(doc, payload.ids)
+        except PermissionError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(409, str(error)) from error
+        except ValueError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(422, str(error)) from error
+        store.undo.append(snapshot); store.redo.clear()
+        doc.revision += 1; doc.dirty = True; store.preview = None
+        return dict(public_state(), mergedId=merged_id)
+
+
+@app.post('/v1/text-regions/split')
+def split_text_region_route(payload: BoxSplitRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before splitting text region.')
+        region = doc.region_graph.region(payload.id)
+        if region is None:
+            raise HTTPException(404, 'Text region not found.')
+        snapshot = store.frame(('region_graph', 'dialogues', 'active_text_id'))
+        try:
+            id1, id2, focus_id = split_text_region_in_doc(doc, region)
+        except PermissionError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(409, str(error)) from error
+        except ValueError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(422, str(error)) from error
+        store.undo.append(snapshot); store.redo.clear()
+        doc.revision += 1; doc.dirty = True; store.preview = None
+        return dict(public_state(), splitIds=[id1, id2], focusId=focus_id)
+
+
+@app.post('/v1/text-regions/{identifier}/expand')
+def expand_text_region_route(identifier: str, payload: BoxExpandRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before expanding text region.')
+        region = doc.region_graph.region(identifier)
+        if region is None:
+            raise HTTPException(404, 'Text region not found.')
+        snapshot = store.frame(('region_graph', 'dialogues'))
+        try:
+            new_rect = expand_text_region_in_doc(doc, region, payload.paddingRatio)
+        except ValueError as error:
+            _rollback_snapshot(doc, snapshot)
+            raise HTTPException(422, str(error)) from error
+        store.undo.append(snapshot); store.redo.clear()
+        doc.revision += 1; doc.dirty = True; store.preview = None
+        return dict(public_state(), rect=list(new_rect))
+
+
+@app.post('/v1/dialogues/auto-fit-batch')
+def auto_fit_batch_route(payload: DialogueAutoFitBatchRequest, request: Request):
+    require_auth(request.headers.get('authorization'))
+    with store.lock:
+        check_idle(editing=True); doc = store.require()
+        if payload.pageId != doc.region_graph.page_id:
+            raise HTTPException(409, 'Page changed before applying auto-fit font sizes.')
+        update_map = {item.id: item for item in payload.updates}
+        changed = False
+        updated_dialogues = []
+        for d in doc.dialogues:
+            item = update_map.get(d.id)
+            if item is not None and not d.locked and d.auto_fit:
+                next_min = min(item.minimum_size, item.size)
+                if d.size != item.size or d.minimum_size != next_min:
+                    nd = replace(d, size=item.size, minimum_size=next_min)
+                    nd.validate()
+                    updated_dialogues.append(nd)
+                    changed = True
+                    continue
+            updated_dialogues.append(d)
+        if changed:
+            doc.dialogues = updated_dialogues
+            doc.revision += 1; doc.dirty = True; store.preview = None
         return public_state()
 
 
